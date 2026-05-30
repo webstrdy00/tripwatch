@@ -2,6 +2,9 @@ import { maskSecrets } from "@/lib/secrets";
 
 export type TripWatchErrorCode =
   | "VALIDATION_ERROR"
+  | "NOT_FOUND"
+  | "NOT_IMPLEMENTED"
+  | "DISABLED_WATCH_ITEM"
   | "HELPER_TIMEOUT"
   | "HELPER_FAILED"
   | "PARSE_ERROR"

@@ -1,24 +1,50 @@
-import { EmptyState } from "@/components/ui/EmptyState";
-import { LoadingNotice } from "@/components/ui/LoadingNotice";
-import { StatusBadge } from "@/components/ui/StatusBadge";
+import { WatchlistTable } from "@/components/watchlist/WatchlistTable";
+import { ErrorCard } from "@/components/ui/ErrorCard";
 import { SAFETY_NOTICE } from "@/lib/constants";
+import { db } from "@/lib/db";
+import { summarizeError } from "@/lib/errors";
+import { serializeWatchItems, type WatchItemListItem } from "@/lib/watchlist";
 
-export default function WatchlistPage() {
+export const dynamic = "force-dynamic";
+
+const watchItemInclude = {
+  results: {
+    orderBy: {
+      checkedAt: "desc" as const
+    },
+    take: 1
+  }
+};
+
+async function getWatchItems(): Promise<{ items: WatchItemListItem[]; error?: string }> {
+  try {
+    const items = await db.watchItem.findMany({
+      orderBy: {
+        updatedAt: "desc"
+      },
+      include: watchItemInclude
+    });
+
+    return {
+      items: serializeWatchItems(items)
+    };
+  } catch (error) {
+    return {
+      items: [],
+      error: summarizeError(error)
+    };
+  }
+}
+
+export default async function WatchlistPage() {
+  const { items, error } = await getWatchItems();
+
   return (
     <div className="grid gap-5">
-      <PageTitle title="관심 조건" description="저장 조건 목록 placeholder입니다. 외부 조회와 DB 저장은 다음 Phase에서 연결합니다." />
-      <section className="rounded-md border border-line bg-white p-4">
-        <div className="mb-3 flex flex-wrap gap-2">
-          <StatusBadge status="needs_check" />
-          <StatusBadge status="failed" />
-        </div>
-        <EmptyState
-          title="저장된 관심 조건이 없습니다."
-          description="항공권, 버스, 공연 조건 저장 UI와 조회 결과 저장은 다음 Phase의 작업입니다."
-        />
-        <LoadingNotice message="관심 조건 CRUD와 다시 조회 버튼은 아직 placeholder입니다." />
-        <p className="mt-3 text-sm font-semibold text-slate-700">{SAFETY_NOTICE}</p>
-      </section>
+      <PageTitle title="관심 조건" description="저장한 항공권, 버스, 공연 조건을 관리합니다." />
+      {error ? <ErrorCard title="관심 조건을 불러오지 못했습니다." message={error} /> : null}
+      <WatchlistTable initialItems={items} />
+      <p className="text-sm font-semibold text-slate-700">{SAFETY_NOTICE}</p>
     </div>
   );
 }

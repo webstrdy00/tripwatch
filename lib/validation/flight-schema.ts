@@ -10,6 +10,7 @@ export const flightSearchSchema = z
     returnDate: isoDateSchema.optional(),
     adults: z.number().int().min(1).max(9).default(1),
     seat: seatSchema.default("economy"),
+    mode: z.enum(["oneway", "roundtrip"]).default("roundtrip"),
     limit: z.number().int().min(1).max(20).default(5)
   })
   .refine((value) => value.from !== value.to, {
