@@ -1,0 +1,43 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model WatchItem {
+  id         String        @id @default(cuid())
+  type       String
+  title      String
+  paramsJson String
+  memo       String?
+  enabled    Boolean       @default(true)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  results    QueryResult[]
+
+  @@index([type])
+  @@index([enabled])
+}
+
+model QueryResult {
+  id          String     @id @default(cuid())
+  watchItemId String?
+  type        String
+  status      String
+  source      String?
+  checkedAt   DateTime   @default(now())
+  summary     String?
+  officialUrl String?
+  resultJson  String
+  errorCode   String?
+  errorText   String?
+  createdAt   DateTime   @default(now())
+  watchItem   WatchItem? @relation(fields: [watchItemId], references: [id], onDelete: SetNull)
+
+  @@index([watchItemId])
+  @@index([type])
+  @@index([status])
+  @@index([checkedAt])
+}
