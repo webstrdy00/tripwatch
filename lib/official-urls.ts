@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { ticketPlatformSchema, type TicketPlatform } from "@/lib/validation/common-schema";
+import type { BusSearchInput } from "@/lib/validation/bus-schema";
 import type { FlightCompareMonthInput, FlightSearchInput } from "@/lib/validation/flight-schema";
 
 export const OFFICIAL_URLS = {
@@ -36,6 +37,14 @@ export function buildGoogleFlightsSearchUrl(
   params.set("q", `${tripText} ${input.adults} adult ${input.seat}`);
 
   return `${OFFICIAL_URLS.flight}?${params.toString()}`;
+}
+
+export function buildExpressBusOfficialUrl(_input?: Partial<BusSearchInput>): string {
+  return `${OFFICIAL_URLS.express_bus}/mrs/rotinf.do`;
+}
+
+export function buildIntercityBusOfficialUrl(_input?: Partial<BusSearchInput>): string {
+  return `${OFFICIAL_URLS.intercity_bus}/otck/trmlInfEnty.do`;
 }
 
 export function getTicketOfficialUrl(platform: TicketPlatform, id?: string): string {
