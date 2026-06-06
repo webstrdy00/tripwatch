@@ -50,6 +50,9 @@ coverage/
 htmlcov/
 docs/
 /docs
+docs/
+/docs/*
+!/docs/helper-smoke-report.md
 image/
 /image
 issues/

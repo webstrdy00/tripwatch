@@ -5,7 +5,7 @@ import type { TripWatchApiResponse } from "@/lib/api-response";
 type CreateQueryResultInput<T> = {
   type: string;
   response: TripWatchApiResponse<T>;
-  watchItemId?: string;
+  watchItemId?: string | null;
 };
 
 function toCheckedAtDate(value: string): Date {
@@ -20,7 +20,7 @@ export async function createQueryResultFromResponse<T>({
 }: CreateQueryResultInput<T>) {
   return db.queryResult.create({
     data: {
-      watchItemId,
+      watchItemId: watchItemId ?? null,
       type,
       status: response.status,
       source: response.source,

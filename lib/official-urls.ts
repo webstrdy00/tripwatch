@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { ticketPlatformSchema, type TicketPlatform } from "@/lib/validation/common-schema";
+import type { FlightCompareMonthInput, FlightSearchInput } from "@/lib/validation/flight-schema";
 
 export const OFFICIAL_URLS = {
   flight: "https://www.google.com/travel/flights",
@@ -16,6 +17,25 @@ export type OfficialUrlType = "flight" | "express_bus" | "intercity_bus" | "tick
 
 export function getOfficialUrl(type: Exclude<OfficialUrlType, "ticket">): string {
   return OFFICIAL_URLS[type];
+}
+
+export function buildGoogleFlightsSearchUrl(
+  input: Pick<FlightSearchInput, "from" | "to" | "date" | "returnDate" | "adults" | "seat" | "mode"> | Pick<FlightCompareMonthInput, "from" | "to" | "date" | "returnDate" | "adults" | "seat" | "mode" | "yearMonth">
+): string {
+  const params = new URLSearchParams({
+    hl: "ko",
+    curr: "KRW"
+  });
+  const tripText =
+    "yearMonth" in input
+      ? `${input.from} to ${input.to} ${input.yearMonth}`
+      : input.mode === "roundtrip" && input.returnDate
+        ? `${input.from} to ${input.to} ${input.date} return ${input.returnDate}`
+        : `${input.from} to ${input.to} ${input.date}`;
+
+  params.set("q", `${tripText} ${input.adults} adult ${input.seat}`);
+
+  return `${OFFICIAL_URLS.flight}?${params.toString()}`;
 }
 
 export function getTicketOfficialUrl(platform: TicketPlatform, id?: string): string {

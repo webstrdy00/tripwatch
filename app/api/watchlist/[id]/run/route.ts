@@ -3,6 +3,11 @@ import { NextResponse } from "next/server";
 import { failedResponse } from "@/lib/api-response";
 import { db } from "@/lib/db";
 import { toApiError, TripWatchError } from "@/lib/errors";
+import type { FlightSearchData } from "@/lib/normalize/normalize-flight";
+import { getOfficialUrl } from "@/lib/official-urls";
+import { createQueryResultFromResponse } from "@/lib/result-store";
+import { searchFlights } from "@/lib/services/flight-service";
+import { flightSearchSchema } from "@/lib/validation/flight-schema";
 
 const SOURCE = "tripwatch:watchlist-run";
 
@@ -35,6 +40,32 @@ function jsonError(error: unknown) {
   );
 }
 
+function httpStatus(errorCode: string | undefined): number {
+  if (errorCode === "VALIDATION_ERROR") {
+    return 400;
+  }
+
+  if (errorCode === "HELPER_TIMEOUT") {
+    return 504;
+  }
+
+  if (errorCode === "HELPER_FAILED" || errorCode === "PARSE_ERROR") {
+    return 502;
+  }
+
+  return 500;
+}
+
+function parseParamsJson(paramsJson: string): unknown {
+  try {
+    return JSON.parse(paramsJson) as unknown;
+  } catch (error) {
+    throw new TripWatchError("VALIDATION_ERROR", "관심 조건 JSON이 올바르지 않습니다.", {
+      cause: error
+    });
+  }
+}
+
 export async function POST(_request: Request, context: RouteContext) {
   try {
     const { id } = await context.params;
@@ -60,6 +91,41 @@ export async function POST(_request: Request, context: RouteContext) {
         }),
         { status: 409 }
       );
+    }
+
+    if (item.type === "flight") {
+      const parsed = flightSearchSchema.safeParse(parseParamsJson(item.paramsJson));
+
+      if (!parsed.success) {
+        const response = failedResponse<FlightSearchData>({
+          source: "google-flights-link",
+          officialUrl: getOfficialUrl("flight"),
+          summary: "저장된 항공권 조건이 올바르지 않습니다.",
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "저장된 항공권 조건이 올바르지 않습니다.",
+            raw: parsed.error.issues.map((issue) => issue.message).join("; ")
+          }
+        });
+        await createQueryResultFromResponse({
+          type: "flight",
+          response,
+          watchItemId: item.id
+        });
+
+        return NextResponse.json(response, { status: 400 });
+      }
+
+      const response = await searchFlights(parsed.data);
+      await createQueryResultFromResponse({
+        type: "flight",
+        response,
+        watchItemId: item.id
+      });
+
+      return NextResponse.json(response, {
+        status: response.status === "failed" ? httpStatus(response.error?.code) : 200
+      });
     }
 
     return NextResponse.json(
