@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ticketPlatformSchema, type TicketPlatform } from "@/lib/validation/common-schema";
 import type { BusSearchInput } from "@/lib/validation/bus-schema";
 import type { FlightCompareMonthInput, FlightSearchInput } from "@/lib/validation/flight-schema";
+import { parseTicketInput } from "@/lib/validation/ticket-schema";
 
 export const OFFICIAL_URLS = {
   flight: "https://www.google.com/travel/flights",
@@ -59,7 +60,17 @@ export function getTicketOfficialUrl(platform: TicketPlatform, id?: string): str
   return OFFICIAL_URLS.ticket[platform];
 }
 
+export function buildTicketOfficialUrl(platform: TicketPlatform, id?: string): string {
+  return getTicketOfficialUrl(platform, id);
+}
+
 export function getTicketOfficialUrlFromInput(input: string): string | undefined {
+  const parsedInput = parseTicketInput(input);
+
+  if (parsedInput) {
+    return getTicketOfficialUrl(parsedInput.platform, parsedInput.id);
+  }
+
   const platformId = /^(interpark|yes24):([A-Za-z0-9_-]+)$/.exec(input);
 
   if (platformId) {

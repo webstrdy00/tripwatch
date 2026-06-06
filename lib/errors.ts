@@ -7,6 +7,7 @@ export type TripWatchErrorCode =
   | "DISABLED_WATCH_ITEM"
   | "TERMINAL_NOT_FOUND"
   | "NO_RESULTS"
+  | "NO_SCHEDULE"
   | "HELPER_TIMEOUT"
   | "HELPER_FAILED"
   | "PARSE_ERROR"
