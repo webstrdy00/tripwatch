@@ -1,18 +1,6 @@
 import type { DashboardSummaryData } from "@/lib/dashboard";
+import { formatDate, formatDateTime } from "@/lib/dates";
 
-function formatDateTime(value: string | undefined): string {
-  if (!value) {
-    return "-";
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return "-";
-  }
-
-  return date.toISOString().replace("T", " ").slice(0, 16);
-}
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat("ko-KR").format(value);
@@ -54,7 +42,7 @@ export function SummaryCards({ summary }: { summary: DashboardSummaryData }) {
         ))}
       </div>
       <div className="rounded-md border border-line bg-white px-4 py-3 text-sm font-bold text-slate-600">
-        오늘 {formatDateTime(summary.generatedAt)} · 최근 조회 {formatDateTime(summary.lastBatchCheckedAt)}
+        오늘 {formatDate(summary.generatedAt)} · 최근 조회 {formatDateTime(summary.lastCheckedAt)}
       </div>
     </section>
   );

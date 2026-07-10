@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
-import { summarizeError } from "@/lib/errors";
+import { summarizeError, TripWatchError } from "@/lib/errors";
+import { getSafeOfficialUrl } from "@/lib/official-urls";
 import type { TripWatchApiResponse } from "@/lib/api-response";
 
 type CreateQueryResultInput<T> = {
@@ -10,7 +11,12 @@ type CreateQueryResultInput<T> = {
 
 function toCheckedAtDate(value: string): Date {
   const checkedAt = new Date(value);
-  return Number.isNaN(checkedAt.getTime()) ? new Date() : checkedAt;
+
+  if (Number.isNaN(checkedAt.getTime())) {
+    throw new TripWatchError("UNKNOWN_ERROR", "조회 시각이 올바르지 않아 결과를 저장할 수 없습니다.");
+  }
+
+  return checkedAt;
 }
 
 export async function createQueryResultFromResponse<T>({
@@ -26,7 +32,7 @@ export async function createQueryResultFromResponse<T>({
       source: response.source,
       checkedAt: toCheckedAtDate(response.checkedAt),
       summary: response.summary,
-      officialUrl: response.officialUrl,
+      officialUrl: getSafeOfficialUrl(type, response.officialUrl),
       resultJson: JSON.stringify(response.data ?? {}),
       errorCode: response.error?.code,
       errorText: response.error ? summarizeError(response.error.message) : undefined

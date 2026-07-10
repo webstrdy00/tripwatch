@@ -1,6 +1,4 @@
-import { z } from "zod";
-
-import { ticketPlatformSchema, type TicketPlatform } from "@/lib/validation/common-schema";
+import type { TicketPlatform } from "@/lib/validation/common-schema";
 import type { BusSearchInput } from "@/lib/validation/bus-schema";
 import type { FlightCompareMonthInput, FlightSearchInput } from "@/lib/validation/flight-schema";
 import { parseTicketInput } from "@/lib/validation/ticket-schema";
@@ -16,6 +14,63 @@ export const OFFICIAL_URLS = {
 } as const;
 
 export type OfficialUrlType = "flight" | "express_bus" | "intercity_bus" | "ticket";
+const OFFICIAL_HOSTS: Record<OfficialUrlType, readonly string[]> = {
+  flight: ["google.com"],
+  express_bus: ["kobus.co.kr"],
+  intercity_bus: ["tmoney.co.kr"],
+  ticket: ["tickets.interpark.com", "ticket.yes24.com"]
+};
+
+function isOfficialUrlType(value: string): value is OfficialUrlType {
+  return value === "flight" || value === "express_bus" || value === "intercity_bus" || value === "ticket";
+}
+
+function defaultOfficialUrl(type: OfficialUrlType): string | undefined {
+  if (type === "flight") {
+    return OFFICIAL_URLS.flight;
+  }
+
+  if (type === "express_bus") {
+    return buildExpressBusOfficialUrl();
+  }
+
+  if (type === "intercity_bus") {
+    return buildIntercityBusOfficialUrl();
+  }
+
+  return undefined;
+}
+
+function isAllowedOfficialUrl(type: OfficialUrlType, value: string): boolean {
+  try {
+    const url = new URL(value);
+
+    if (url.protocol !== "https:" || url.username || url.password) {
+      return false;
+    }
+
+    const hostname = url.hostname.toLowerCase();
+    return OFFICIAL_HOSTS[type].some((allowedHost) => hostname === allowedHost || hostname.endsWith(`.${allowedHost}`));
+  } catch {
+    return false;
+  }
+}
+
+export function getSafeOfficialUrl(type: string, candidate?: string, fallback?: string): string | undefined {
+  if (!isOfficialUrlType(type)) {
+    return undefined;
+  }
+
+  if (candidate && isAllowedOfficialUrl(type, candidate)) {
+    return candidate;
+  }
+
+  if (fallback && isAllowedOfficialUrl(type, fallback)) {
+    return fallback;
+  }
+
+  return defaultOfficialUrl(type);
+}
 
 export function getOfficialUrl(type: Exclude<OfficialUrlType, "ticket">): string {
   return OFFICIAL_URLS[type];
@@ -67,32 +122,5 @@ export function buildTicketOfficialUrl(platform: TicketPlatform, id?: string): s
 export function getTicketOfficialUrlFromInput(input: string): string | undefined {
   const parsedInput = parseTicketInput(input);
 
-  if (parsedInput) {
-    return getTicketOfficialUrl(parsedInput.platform, parsedInput.id);
-  }
-
-  const platformId = /^(interpark|yes24):([A-Za-z0-9_-]+)$/.exec(input);
-
-  if (platformId) {
-    const platform = ticketPlatformSchema.parse(platformId[1]);
-    return getTicketOfficialUrl(platform, platformId[2]);
-  }
-
-  const url = z.string().url().safeParse(input);
-
-  if (!url.success) {
-    return undefined;
-  }
-
-  const parsed = new URL(url.data);
-
-  if (parsed.hostname.includes("interpark.com")) {
-    return input;
-  }
-
-  if (parsed.hostname.includes("yes24.com")) {
-    return input;
-  }
-
-  return undefined;
+  return parsedInput ? getTicketOfficialUrl(parsedInput.platform, parsedInput.id) : undefined;
 }

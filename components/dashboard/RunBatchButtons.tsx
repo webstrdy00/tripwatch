@@ -31,19 +31,19 @@ const BUTTONS: {
 }[] = [
   {
     id: "all",
-    label: "전체",
+    label: "전체 다시 조회",
     body: {}
   },
   {
     id: "flight",
-    label: "항공권",
+    label: "항공권만",
     body: {
       type: "flight"
     }
   },
   {
     id: "bus",
-    label: "버스",
+    label: "버스만",
     body: [
       {
         type: "express_bus",
@@ -56,20 +56,20 @@ const BUTTONS: {
     ]
   },
   {
-    id: "failed",
-    label: "실패",
-    body: {
-      failedOnly: true
-    }
-  },
-  {
     id: "ticket",
-    label: "공연",
+    label: "공연만",
     body: {
       type: "ticket",
       includeTickets: true
     },
-    confirmMessage: "공연 관심 조건은 전체 다시 조회에서 제외됩니다. 공연만 다시 조회할까요?"
+    confirmMessage: "공연은 기본 전체 다시 조회에서 제외됩니다. 이 요청에만 공연을 포함해 다시 조회할까요?"
+  },
+  {
+    id: "failed",
+    label: "실패만",
+    body: {
+      failedOnly: true
+    }
   }
 ];
 
@@ -181,6 +181,9 @@ export function RunBatchButtons() {
           ))}
         </div>
       </div>
+      <p className="mt-3 text-xs font-bold text-slate-500">
+        전체 다시 조회와 실패만 조회는 공연을 제외합니다. 공연은 공연만 버튼에서 확인 후 실행합니다.
+      </p>
 
       {notice ? (
         <div

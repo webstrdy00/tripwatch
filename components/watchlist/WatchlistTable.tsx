@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { WatchItemActions, type WatchItemPatchPayload } from "@/components/watchlist/WatchItemActions";
 import { WatchItemForm, type WatchItemCreatePayload } from "@/components/watchlist/WatchItemForm";
@@ -27,15 +27,35 @@ export function WatchlistTable({ initialItems }: { initialItems: WatchItemListIt
   const [items, setItems] = useState(initialItems);
   const [notice, setNotice] = useState<Notice | undefined>();
   const [busyId, setBusyId] = useState<string | undefined>();
+  const [runningId, setRunningId] = useState<string | undefined>();
   const [creating, setCreating] = useState(false);
+  const itemOperationLock = useRef(false);
+
+  function beginItemOperation(id: string): boolean {
+    if (itemOperationLock.current) {
+      return false;
+    }
+
+    itemOperationLock.current = true;
+    setBusyId(id);
+    setNotice(undefined);
+    return true;
+  }
+
+  function endItemOperation() {
+    itemOperationLock.current = false;
+    setBusyId(undefined);
+  }
 
   async function refreshItems() {
     const response = await fetch("/api/watchlist");
     const result = await readApiResponse<{ items: WatchItemListItem[] }>(response);
 
-    if (result.status === "success" && result.data?.items) {
-      setItems(result.data.items);
+    if (result.status !== "success" || !result.data?.items) {
+      throw new Error(responseMessage(result));
     }
+
+    setItems(result.data.items);
   }
 
   async function createItem(payload: WatchItemCreatePayload) {
@@ -68,8 +88,9 @@ export function WatchlistTable({ initialItems }: { initialItems: WatchItemListIt
   }
 
   async function patchItem(id: string, payload: WatchItemPatchPayload) {
-    setBusyId(id);
-    setNotice(undefined);
+    if (!beginItemOperation(id)) {
+      return;
+    }
 
     try {
       const response = await fetch(`/api/watchlist/${encodeURIComponent(id)}`, {
@@ -92,7 +113,7 @@ export function WatchlistTable({ initialItems }: { initialItems: WatchItemListIt
     } catch {
       setNotice({ tone: "failed", message: "관심 조건 수정 요청을 완료하지 못했습니다." });
     } finally {
-      setBusyId(undefined);
+      endItemOperation();
     }
   }
 
@@ -101,8 +122,9 @@ export function WatchlistTable({ initialItems }: { initialItems: WatchItemListIt
       return;
     }
 
-    setBusyId(id);
-    setNotice(undefined);
+    if (!beginItemOperation(id)) {
+      return;
+    }
 
     try {
       const response = await fetch(`/api/watchlist/${encodeURIComponent(id)}`, {
@@ -120,32 +142,42 @@ export function WatchlistTable({ initialItems }: { initialItems: WatchItemListIt
     } catch {
       setNotice({ tone: "failed", message: "관심 조건 삭제 요청을 완료하지 못했습니다." });
     } finally {
-      setBusyId(undefined);
+      endItemOperation();
     }
   }
 
   async function runItem(id: string) {
-    setBusyId(id);
-    setNotice(undefined);
+    if (!beginItemOperation(id)) {
+      return;
+    }
+
+    setRunningId(id);
 
     try {
       const response = await fetch(`/api/watchlist/${encodeURIComponent(id)}/run`, {
         method: "POST"
       });
       const result = await readApiResponse<unknown>(response);
+      let refreshFailed = false;
+
       try {
         await refreshItems();
       } catch {
-        // 조회 결과 저장은 완료됐을 수 있으므로 목록 갱신 실패만 조용히 넘긴다.
+        refreshFailed = true;
       }
+
+      const message = responseMessage(result);
       setNotice({
-        tone: result.status,
-        message: responseMessage(result)
+        tone: refreshFailed && result.status !== "failed" ? "partial" : result.status,
+        message: refreshFailed
+          ? `${message} 최신 결과 목록을 갱신하지 못했습니다. 페이지를 새로고침하세요.`
+          : message
       });
     } catch {
       setNotice({ tone: "failed", message: "다시 조회 요청을 완료하지 못했습니다." });
     } finally {
-      setBusyId(undefined);
+      setRunningId(undefined);
+      endItemOperation();
     }
   }
 
@@ -192,10 +224,27 @@ export function WatchlistTable({ initialItems }: { initialItems: WatchItemListIt
                   <td className="font-bold text-slate-700">{item.enabled ? "활성" : "비활성"}</td>
                   <td className="max-w-sm text-sm font-medium text-slate-700">
                     <WatchItemResultSummary item={item} />
+                    {item.latestResult?.officialUrl ? (
+                      <a
+                        href={item.latestResult.officialUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-2 inline-block text-xs font-black text-slate-600 underline-offset-4 hover:underline"
+                      >
+                        공식 페이지
+                      </a>
+                    ) : null}
                   </td>
                   <td className="whitespace-nowrap text-sm font-medium text-slate-700">{formatDateTime(item.latestResult?.checkedAt)}</td>
                   <td>
-                    <WatchItemActions item={item} busy={busyId === item.id} onPatch={patchItem} onDelete={deleteItem} onRun={runItem} />
+                    <WatchItemActions
+                      item={item}
+                      busy={Boolean(busyId)}
+                      running={runningId === item.id}
+                      onPatch={patchItem}
+                      onDelete={deleteItem}
+                      onRun={runItem}
+                    />
                   </td>
                 </tr>
               ))}

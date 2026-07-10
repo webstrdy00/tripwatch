@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { formatDateTime } from "@/lib/dates";
 import { summarizeLatestResult, summarizeWatchItemParams, type WatchItemListItem } from "@/lib/watchlist";
 
 const TYPE_LABELS: Record<WatchItemListItem["type"], string> = {
@@ -10,19 +11,6 @@ const TYPE_LABELS: Record<WatchItemListItem["type"], string> = {
   ticket: "공연"
 };
 
-function formatDateTime(value: string | undefined): string {
-  if (!value) {
-    return "-";
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return "-";
-  }
-
-  return date.toISOString().replace("T", " ").slice(0, 16);
-}
 
 export function WatchItemsPanel({ items }: { items: WatchItemListItem[] }) {
   return (

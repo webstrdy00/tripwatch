@@ -186,6 +186,29 @@ function buildSearchSummary(query: FlightQuery, priceSummary: FlightPriceSummary
 
   return `${route} / ${trip} / 최저 ${minPrice}, 평균 ${avgPrice}, 후보 ${flights.length}개`;
 }
+function safeGoogleFlightsUrl(value: string | undefined, fallback: string): string {
+  if (!value) {
+    return fallback;
+  }
+
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+
+    if (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      (hostname === "google.com" || hostname.endsWith(".google.com"))
+    ) {
+      return value;
+    }
+  } catch {
+    return fallback;
+  }
+
+  return fallback;
+}
 
 export function normalizeFlightSearchPayload(
   payload: unknown,
@@ -196,7 +219,7 @@ export function normalizeFlightSearchPayload(
   const meta = asRecord(record.meta);
   const stats = asRecord(record.stats);
   const flights = asArray(record.flights).map(normalizeFlightOption);
-  const officialUrl = stringValue(meta.booking_search_url) ?? fallbackOfficialUrl;
+  const officialUrl = safeGoogleFlightsUrl(stringValue(meta.booking_search_url), fallbackOfficialUrl);
   const priceSummary: FlightPriceSummary = {
     minPrice: numberValue(stats.min_price),
     avgPrice: numberValue(stats.avg_price),
@@ -221,23 +244,27 @@ export function normalizeFlightSearchPayload(
   };
 }
 
-function normalizeCheapestDate(value: unknown): FlightCheapestDate {
+function normalizeCheapestDate(value: unknown, fallbackOfficialUrl: string): FlightCheapestDate {
   const row = asRecord(value);
   const ok = row.ok !== false;
   const minPrice = numberValue(row.min_price ?? row.minPrice);
   const avgPrice = numberValue(row.avg_price ?? row.avgPrice);
   const date = stringValue(row.date) ?? "unknown";
   const summary = ok ? `${date} / 최저 ${formatKrw(minPrice)}` : `${date} / 조회 실패`;
+  const rowError = stringValue(row.error);
 
   return {
     date,
     minPrice,
     avgPrice,
     priceBand: normalizePriceBand(row.price_band ?? row.priceBand),
-    bookingSearchUrl: stringValue(row.booking_search_url ?? row.bookingSearchUrl),
+    bookingSearchUrl: safeGoogleFlightsUrl(
+      stringValue(row.booking_search_url ?? row.bookingSearchUrl),
+      fallbackOfficialUrl
+    ),
     status: ok ? "success" : "failed",
     summary,
-    error: stringValue(row.error)
+    error: rowError ? "해당 날짜 조회에 실패했습니다." : undefined
   };
 }
 
@@ -257,10 +284,12 @@ export function normalizeFlightCompareMonthPayload(
   const meta = asRecord(record.meta);
   const stats = asRecord(record.stats);
   const rows = asArray(record.rows);
-  const cheapestDates = asArray(record.cheapest_dates ?? record.cheapestDates).map(normalizeCheapestDate);
+  const cheapestDates = asArray(record.cheapest_dates ?? record.cheapestDates).map((value) =>
+    normalizeCheapestDate(value, fallbackOfficialUrl)
+  );
   const firstCheapest = cheapestDates.find((row) => row.status === "success");
   const topFlights = asArray(asRecord(asArray(record.cheapest_dates ?? record.cheapestDates)[0]).top).map(normalizeFlightOption);
-  const officialUrl = firstCheapest?.bookingSearchUrl ?? fallbackOfficialUrl;
+  const officialUrl = safeGoogleFlightsUrl(firstCheapest?.bookingSearchUrl, fallbackOfficialUrl);
   const sampledDates = numberValue(meta.sampled_dates ?? meta.sampledDates);
   const successfulDates = numberValue(meta.successful_dates ?? meta.successfulDates);
   const priceSummary: FlightPriceSummary = {

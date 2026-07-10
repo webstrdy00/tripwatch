@@ -41,8 +41,11 @@ export function parseTicketInput(input: string): ParsedTicketInput | undefined {
 
   const url = new URL(parsedUrl.data);
   const hostname = url.hostname.toLowerCase();
+  if (url.protocol !== "https:" || url.username || url.password) {
+    return undefined;
+  }
 
-  if (hostname.includes("tickets.interpark.com")) {
+  if (hostname === "tickets.interpark.com") {
     const match = /\/goods\/([A-Za-z0-9_-]+)/i.exec(url.pathname);
 
     if (!match) {
@@ -56,7 +59,7 @@ export function parseTicketInput(input: string): ParsedTicketInput | undefined {
     };
   }
 
-  if (hostname.includes("ticket.yes24.com")) {
+  if (hostname === "ticket.yes24.com") {
     const match = /\/(?:New\/)?Perf\/(?:Detail\/)?(?:View\/)?([A-Za-z0-9_-]+)/i.exec(url.pathname);
 
     if (!match) {

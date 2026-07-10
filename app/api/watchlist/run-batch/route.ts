@@ -5,11 +5,10 @@ import { z } from "zod";
 import type { TripWatchApiResponse, TripWatchStatus } from "@/lib/api-response";
 import { failedResponse } from "@/lib/api-response";
 import { db } from "@/lib/db";
-import { runWatchItem } from "@/lib/services/watchlist-run-service";
+import { isFailedRerunCooldownActive, runWatchItem } from "@/lib/services/watchlist-run-service";
 import type { WatchItemType } from "@/lib/validation/common-schema";
 
 const SOURCE = "tripwatch:watchlist-run-batch";
-const FAILED_RERUN_COOLDOWN_MS = 60_000;
 const MAX_BATCH_LIMIT = 10;
 
 export const dynamic = "force-dynamic";
@@ -71,9 +70,17 @@ type RunBatchInput = z.infer<typeof runBatchSchema>;
 
 const watchItemInclude = {
   results: {
-    orderBy: {
-      checkedAt: "desc" as const
-    },
+    orderBy: [
+      {
+        checkedAt: "desc" as const
+      },
+      {
+        createdAt: "desc" as const
+      },
+      {
+        id: "desc" as const
+      }
+    ],
     take: 1
   }
 };
@@ -121,16 +128,6 @@ function latestResult(item: BatchWatchItem): Pick<QueryResult, "status" | "check
 
 function isLatestFailed(item: BatchWatchItem): boolean {
   return latestResult(item)?.status === "failed";
-}
-
-function isFailureCooldownActive(item: BatchWatchItem, now: Date): boolean {
-  const result = latestResult(item);
-
-  if (!result || result.status !== "failed") {
-    return false;
-  }
-
-  return now.getTime() - result.checkedAt.getTime() < FAILED_RERUN_COOLDOWN_MS;
 }
 
 function skippedResult(item: BatchWatchItem): BatchRunItemResult {
@@ -239,50 +236,65 @@ export async function POST(request: Request) {
     });
   }
 
-  const types = targetTypes(input);
-  const now = new Date();
-  const allCandidates =
-    types.length === 0
-      ? []
-      : await db.watchItem.findMany({
-          where: {
-            enabled: true,
-            type: {
-              in: types
-            }
-          },
-          orderBy: {
-            updatedAt: "desc"
-          },
-          include: watchItemInclude
-        });
-  const candidates = input.failedOnly ? allCandidates.filter(isLatestFailed) : allCandidates;
-  const limitedCandidates = candidates.slice(0, input.limit);
-  const results: BatchRunItemResult[] = [];
+  try {
+    const types = targetTypes(input);
+    const allCandidates =
+      types.length === 0
+        ? []
+        : await db.watchItem.findMany({
+            where: {
+              enabled: true,
+              type: {
+                in: types
+              }
+            },
+            orderBy: {
+              updatedAt: "desc"
+            },
+            include: watchItemInclude
+          });
+    const candidates = input.failedOnly ? allCandidates.filter(isLatestFailed) : allCandidates;
+    const limitedCandidates = candidates.slice(0, input.limit);
+    const results: BatchRunItemResult[] = [];
 
-  for (const item of limitedCandidates) {
-    if (input.failedOnly && isFailureCooldownActive(item, now)) {
-      results.push(skippedResult(item));
-      continue;
+    for (const item of limitedCandidates) {
+      if (isFailedRerunCooldownActive(latestResult(item), new Date())) {
+        results.push(skippedResult(item));
+        continue;
+      }
+
+      const { response } = await runWatchItem(item);
+      results.push(resultFromResponse(item, response));
     }
 
-    const { response } = await runWatchItem(item);
-    results.push(resultFromResponse(item, response));
+    const data: WatchlistBatchRunData = {
+      requested: {
+        type: input.type,
+        failedOnly: input.failedOnly,
+        includeTickets: input.includeTickets,
+        limit: input.limit
+      },
+      checkedAt: new Date().toISOString(),
+      totalCandidates: candidates.length,
+      executedCount: results.filter((result) => !result.skipped).length,
+      skippedCount: results.filter((result) => result.skipped).length,
+      results
+    };
+
+    return NextResponse.json(batchResponse(data));
+  } catch {
+    return NextResponse.json(
+      failedResponse({
+        source: SOURCE,
+        summary: "배치 다시 조회를 완료하지 못했습니다.",
+        error: {
+          code: "UNKNOWN_ERROR",
+          message: "배치 다시 조회를 완료하지 못했습니다."
+        }
+      }),
+      {
+        status: 500
+      }
+    );
   }
-
-  const data: WatchlistBatchRunData = {
-    requested: {
-      type: input.type,
-      failedOnly: input.failedOnly,
-      includeTickets: input.includeTickets,
-      limit: input.limit
-    },
-    checkedAt: now.toISOString(),
-    totalCandidates: candidates.length,
-    executedCount: results.filter((result) => !result.skipped).length,
-    skippedCount: results.filter((result) => result.skipped).length,
-    results
-  };
-
-  return NextResponse.json(batchResponse(data));
 }

@@ -1,8 +1,8 @@
-import type { WatchItem } from "@prisma/client";
+import type { QueryResult, WatchItem } from "@prisma/client";
 
 import { failedResponse, type TripWatchApiResponse } from "@/lib/api-response";
 import { db } from "@/lib/db";
-import type { TripWatchErrorCode } from "@/lib/errors";
+import { summarizeError, type TripWatchErrorCode } from "@/lib/errors";
 import {
   buildExpressBusOfficialUrl,
   buildIntercityBusOfficialUrl,
@@ -20,6 +20,7 @@ import { flightCompareMonthSchema, flightSearchSchema } from "@/lib/validation/f
 import { ticketLookupSchema } from "@/lib/validation/ticket-schema";
 
 export const WATCHLIST_RUN_SOURCE = "tripwatch:watchlist-run";
+export const FAILED_RERUN_COOLDOWN_MS = 60_000;
 
 type RunnableWatchItem = Pick<WatchItem, "id" | "type" | "title" | "paramsJson" | "enabled">;
 
@@ -85,6 +86,36 @@ function ticketOfficialUrlFromParams(value: unknown): string | undefined {
   const input = (value as Record<string, unknown>).input;
 
   return typeof input === "string" ? getTicketOfficialUrlFromInput(input) : undefined;
+}
+
+function officialUrlForItem(item: RunnableWatchItem): string | undefined {
+  if (item.type === "flight") {
+    return getOfficialUrl("flight");
+  }
+
+  if (item.type === "express_bus") {
+    return buildExpressBusOfficialUrl();
+  }
+
+  if (item.type === "intercity_bus") {
+    return buildIntercityBusOfficialUrl();
+  }
+
+  if (item.type === "ticket") {
+    return ticketOfficialUrlFromParams(parseParamsJson(item.paramsJson));
+  }
+
+  return undefined;
+}
+
+export function isFailedRerunCooldownActive(
+  result: Pick<QueryResult, "status" | "checkedAt"> | undefined,
+  now = new Date()
+): boolean {
+  return Boolean(
+    result?.status === "failed" &&
+      now.getTime() - result.checkedAt.getTime() < FAILED_RERUN_COOLDOWN_MS
+  );
 }
 
 function zodIssueMessages(issues: { message: string }[]): string {
@@ -223,6 +254,7 @@ export async function runWatchItem(item: RunnableWatchItem): Promise<WatchItemRu
   if (!item.enabled) {
     const response = failedResponse({
       source: WATCHLIST_RUN_SOURCE,
+      officialUrl: officialUrlForItem(item),
       summary: "비활성 관심 조건은 다시 조회할 수 없습니다.",
       error: {
         code: "DISABLED_WATCH_ITEM",
@@ -238,7 +270,24 @@ export async function runWatchItem(item: RunnableWatchItem): Promise<WatchItemRu
     };
   }
 
-  const response = await dispatchWatchItem(item);
+  let response: TripWatchApiResponse<unknown>;
+
+  try {
+    response = await dispatchWatchItem(item);
+  } catch (error) {
+    const message = summarizeError(error);
+
+    response = failedResponse({
+      source: WATCHLIST_RUN_SOURCE,
+      officialUrl: officialUrlForItem(item),
+      summary: message,
+      error: {
+        code: "UNKNOWN_ERROR",
+        message
+      }
+    });
+  }
+
   await saveRunResult(item, response);
 
   return {
@@ -251,6 +300,26 @@ export async function runWatchItemById(id: string): Promise<WatchItemRunResult> 
   const item = await db.watchItem.findUnique({
     where: {
       id
+    },
+    include: {
+      results: {
+        orderBy: [
+          {
+            checkedAt: "desc"
+          },
+          {
+            createdAt: "desc"
+          },
+          {
+            id: "desc"
+          }
+        ],
+        take: 1,
+        select: {
+          status: true,
+          checkedAt: true
+        }
+      }
     }
   });
 
@@ -262,6 +331,21 @@ export async function runWatchItemById(id: string): Promise<WatchItemRunResult> 
         error: {
           code: "WATCH_ITEM_NOT_FOUND",
           message: "관심 조건을 찾을 수 없습니다."
+        }
+      })
+    };
+  }
+
+  if (item.enabled && isFailedRerunCooldownActive(item.results[0])) {
+    return {
+      item,
+      response: failedResponse({
+        source: WATCHLIST_RUN_SOURCE,
+        officialUrl: officialUrlForItem(item),
+        summary: "마지막 실패 후 1분이 지나야 다시 조회할 수 있습니다.",
+        error: {
+          code: "FAILED_RERUN_COOLDOWN",
+          message: "마지막 실패 후 1분이 지나야 다시 조회할 수 있습니다."
         }
       })
     };
@@ -287,6 +371,10 @@ export function httpStatusForRunResponse(response: TripWatchApiResponse<unknown>
 
   if (errorCode === "DISABLED_WATCH_ITEM") {
     return 409;
+  }
+
+  if (errorCode === "FAILED_RERUN_COOLDOWN") {
+    return 429;
   }
 
   if (errorCode === "NOT_IMPLEMENTED") {

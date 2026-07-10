@@ -13,9 +13,17 @@ export const dynamic = "force-dynamic";
 
 const watchItemInclude = {
   results: {
-    orderBy: {
-      checkedAt: "desc" as const
-    },
+    orderBy: [
+      {
+        checkedAt: "desc" as const
+      },
+      {
+        createdAt: "desc" as const
+      },
+      {
+        id: "desc" as const
+      }
+    ],
     take: 1
   }
 };

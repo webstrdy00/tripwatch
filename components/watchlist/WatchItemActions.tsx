@@ -13,12 +13,14 @@ export type WatchItemPatchPayload = {
 export function WatchItemActions({
   item,
   busy,
+  running,
   onPatch,
   onDelete,
   onRun
 }: {
   item: WatchItemListItem;
   busy: boolean;
+  running: boolean;
   onPatch: (id: string, payload: WatchItemPatchPayload) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onRun: (id: string) => Promise<void>;
@@ -73,7 +75,7 @@ export function WatchItemActions({
             void onRun(item.id);
           }}
         >
-          다시 조회
+          {running ? "조회 중" : "다시 조회"}
         </button>
         <button
           className="danger-button"

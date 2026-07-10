@@ -6,6 +6,7 @@ import { useState } from "react";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import type { TripWatchApiResponse } from "@/lib/api-response";
 import type { DashboardResultItem } from "@/lib/dashboard";
+import { formatDateTime } from "@/lib/dates";
 
 const TYPE_LABELS: Record<DashboardResultItem["type"], string> = {
   flight: "항공권",
@@ -13,35 +14,23 @@ const TYPE_LABELS: Record<DashboardResultItem["type"], string> = {
   intercity_bus: "시외버스",
   ticket: "공연"
 };
+const TYPE_SEARCH_PATHS: Record<DashboardResultItem["type"], string> = {
+  flight: "/flights",
+  express_bus: "/buses",
+  intercity_bus: "/buses",
+  ticket: "/tickets"
+};
 
 type Notice = {
   tone: "success" | "partial" | "failed";
   message: string;
 };
 
-function formatDateTime(value: string): string {
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return "-";
-  }
-
-  return date.toISOString().replace("T", " ").slice(0, 16);
-}
 
 function responseMessage(payload: TripWatchApiResponse<unknown>): string {
   return payload.summary ?? payload.error?.message ?? "다시 조회 요청을 처리하지 못했습니다.";
 }
 
-function isRetryCooldownActive(value: string): boolean {
-  const checkedAt = new Date(value);
-
-  if (Number.isNaN(checkedAt.getTime())) {
-    return false;
-  }
-
-  return Date.now() - checkedAt.getTime() < 60_000;
-}
 
 export function FailedResultsPanel({ results }: { results: DashboardResultItem[] }) {
   const router = useRouter();
@@ -98,8 +87,6 @@ export function FailedResultsPanel({ results }: { results: DashboardResultItem[]
       ) : (
         <div className="divide-y divide-line">
           {results.map((result) => {
-            const cooldownActive = isRetryCooldownActive(result.checkedAt);
-
             return (
               <div key={result.id} className="grid gap-2 py-3 first:pt-0 last:pb-0">
                 <div className="flex flex-wrap items-center gap-2">
@@ -116,14 +103,22 @@ export function FailedResultsPanel({ results }: { results: DashboardResultItem[]
                   {result.watchItemId ? (
                     <button
                       type="button"
-                      disabled={Boolean(busyId) || cooldownActive}
+                      disabled={Boolean(busyId)}
                       onClick={() => {
                         void retryResult(result);
                       }}
                       className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-black text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {busyId === result.id ? "조회 중" : cooldownActive ? "1분 대기" : "다시 조회"}
+                      {busyId === result.id ? "조회 중" : "다시 조회"}
                     </button>
+                  ) : null}
+                  {!result.watchItemId ? (
+                    <a
+                      href={TYPE_SEARCH_PATHS[result.type]}
+                      className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-black text-slate-800 hover:bg-slate-50"
+                    >
+                      조건 다시 입력
+                    </a>
                   ) : null}
                   {result.officialUrl ? (
                     <a

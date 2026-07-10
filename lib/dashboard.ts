@@ -32,7 +32,7 @@ export type DashboardSummaryData = {
     failedResults: number;
   };
   generatedAt: string;
-  lastBatchCheckedAt?: string;
+  lastCheckedAt?: string;
   watchItems: WatchItemListItem[];
   recentResults: DashboardResultItem[];
   failedResults: DashboardResultItem[];
@@ -47,9 +47,17 @@ type RawDashboardResult = Pick<
 
 const watchItemInclude = {
   results: {
-    orderBy: {
-      checkedAt: "desc" as const
-    },
+    orderBy: [
+      {
+        checkedAt: "desc" as const
+      },
+      {
+        createdAt: "desc" as const
+      },
+      {
+        id: "desc" as const
+      }
+    ],
     take: 1
   }
 };
@@ -94,9 +102,17 @@ export async function getDashboardSummary(): Promise<DashboardSummaryData> {
     include: watchItemInclude
   });
   const recentResults = await db.queryResult.findMany({
-    orderBy: {
-      checkedAt: "desc"
-    },
+    orderBy: [
+      {
+        checkedAt: "desc"
+      },
+      {
+        createdAt: "desc"
+      },
+      {
+        id: "desc"
+      }
+    ],
     take: 10,
     include: {
       watchItem: {
@@ -111,9 +127,17 @@ export async function getDashboardSummary(): Promise<DashboardSummaryData> {
     where: {
       status: "failed"
     },
-    orderBy: {
-      checkedAt: "desc"
-    },
+    orderBy: [
+      {
+        checkedAt: "desc"
+      },
+      {
+        createdAt: "desc"
+      },
+      {
+        id: "desc"
+      }
+    ],
     take: 10,
     include: {
       watchItem: {
@@ -154,7 +178,7 @@ export async function getDashboardSummary(): Promise<DashboardSummaryData> {
       failedResults: failedResultCount
     },
     generatedAt: new Date().toISOString(),
-    lastBatchCheckedAt: recentResults[0] ? toIsoDate(recentResults[0].checkedAt) : undefined,
+    lastCheckedAt: recentResults[0] ? toIsoDate(recentResults[0].checkedAt) : undefined,
     watchItems: serializeWatchItems(watchItems).slice(0, 10),
     recentResults: recentResults.map(serializeResult),
     failedResults: failedResults.map(serializeResult)

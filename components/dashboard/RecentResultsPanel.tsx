@@ -1,5 +1,6 @@
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import type { DashboardResultItem } from "@/lib/dashboard";
+import { formatDateTime } from "@/lib/dates";
 
 const TYPE_LABELS: Record<DashboardResultItem["type"], string> = {
   flight: "항공권",
@@ -8,15 +9,6 @@ const TYPE_LABELS: Record<DashboardResultItem["type"], string> = {
   ticket: "공연"
 };
 
-function formatDateTime(value: string): string {
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return "-";
-  }
-
-  return date.toISOString().replace("T", " ").slice(0, 16);
-}
 
 export function RecentResultsPanel({ results }: { results: DashboardResultItem[] }) {
   return (
