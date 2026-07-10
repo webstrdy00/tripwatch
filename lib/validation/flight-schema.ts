@@ -122,6 +122,36 @@ export const flightCompareMonthSchema = withFlightSearchRules(flightCompareMonth
     };
   });
 
+function isCompareMonthParams(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const params = value as Record<string, unknown>;
+
+  return typeof params.yearMonth === "string" || typeof params.month === "string" || typeof params.sample === "string";
+}
+
+export const flightWatchItemSchema = z.unknown().transform((value, ctx) => {
+  const schema = isCompareMonthParams(value) ? flightCompareMonthSchema : flightSearchSchema;
+  const parsed = schema.safeParse(value);
+
+  if (!parsed.success) {
+    for (const issue of parsed.error.issues) {
+      ctx.addIssue({
+        code: "custom",
+        message: issue.message,
+        path: issue.path
+      });
+    }
+
+    return z.NEVER;
+  }
+
+  return parsed.data;
+});
+
 export type FlightSearchInput = z.infer<typeof flightSearchSchema>;
 export type FlightSearchRequestInput = z.infer<typeof flightSearchRequestSchema>;
 export type FlightCompareMonthInput = z.infer<typeof flightCompareMonthSchema>;
+export type FlightWatchItemInput = z.infer<typeof flightWatchItemSchema>;

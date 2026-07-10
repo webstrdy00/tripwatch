@@ -10,7 +10,7 @@ import type { TripWatchApiResponse } from "@/lib/api-response";
 import type { WatchItemListItem } from "@/lib/watchlist";
 
 type Notice = {
-  tone: "success" | "failed";
+  tone: "success" | "partial" | "failed";
   message: string;
 };
 
@@ -28,6 +28,15 @@ export function WatchlistTable({ initialItems }: { initialItems: WatchItemListIt
   const [notice, setNotice] = useState<Notice | undefined>();
   const [busyId, setBusyId] = useState<string | undefined>();
   const [creating, setCreating] = useState(false);
+
+  async function refreshItems() {
+    const response = await fetch("/api/watchlist");
+    const result = await readApiResponse<{ items: WatchItemListItem[] }>(response);
+
+    if (result.status === "success" && result.data?.items) {
+      setItems(result.data.items);
+    }
+  }
 
   async function createItem(payload: WatchItemCreatePayload) {
     setCreating(true);
@@ -123,9 +132,14 @@ export function WatchlistTable({ initialItems }: { initialItems: WatchItemListIt
       const response = await fetch(`/api/watchlist/${encodeURIComponent(id)}/run`, {
         method: "POST"
       });
-      const result = await readApiResponse<never>(response);
+      const result = await readApiResponse<unknown>(response);
+      try {
+        await refreshItems();
+      } catch {
+        // 조회 결과 저장은 완료됐을 수 있으므로 목록 갱신 실패만 조용히 넘긴다.
+      }
       setNotice({
-        tone: result.status === "success" ? "success" : "failed",
+        tone: result.status,
         message: responseMessage(result)
       });
     } catch {
@@ -142,7 +156,11 @@ export function WatchlistTable({ initialItems }: { initialItems: WatchItemListIt
       {notice ? (
         <div
           className={`rounded-md border p-4 text-sm font-bold ${
-            notice.tone === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-red-200 bg-red-50 text-red-900"
+            notice.tone === "success"
+              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+              : notice.tone === "partial"
+                ? "border-amber-200 bg-amber-50 text-amber-900"
+                : "border-red-200 bg-red-50 text-red-900"
           }`}
         >
           {notice.message}

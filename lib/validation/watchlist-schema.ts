@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { busSearchSchema } from "@/lib/validation/bus-schema";
 import { watchItemTypeSchema } from "@/lib/validation/common-schema";
-import { flightSearchSchema } from "@/lib/validation/flight-schema";
+import { flightWatchItemSchema } from "@/lib/validation/flight-schema";
 import { ticketLookupSchema } from "@/lib/validation/ticket-schema";
 
 const baseWatchItemSchema = z.object({
@@ -12,7 +12,7 @@ const baseWatchItemSchema = z.object({
 });
 
 export const watchItemParamsByType = {
-  flight: flightSearchSchema,
+  flight: flightWatchItemSchema,
   express_bus: busSearchSchema,
   intercity_bus: busSearchSchema,
   ticket: ticketLookupSchema
