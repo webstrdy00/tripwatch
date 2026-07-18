@@ -14,10 +14,12 @@ import { searchExpressBuses } from "@/lib/services/express-bus-service";
 import { compareFlightMonth, searchFlights } from "@/lib/services/flight-service";
 import { searchIntercityBuses } from "@/lib/services/intercity-bus-service";
 import { getTicketSchedule, getTicketSeats } from "@/lib/services/ticket-service";
+import { searchForesttrip } from "@/lib/services/foresttrip-service";
 import { expressBusSearchSchema, intercityBusSearchSchema } from "@/lib/validation/bus-schema";
 import type { WatchItemType } from "@/lib/validation/common-schema";
 import { flightCompareMonthSchema, flightSearchSchema } from "@/lib/validation/flight-schema";
 import { ticketLookupSchema } from "@/lib/validation/ticket-schema";
+import { foresttripSearchSchema } from "@/lib/validation/foresttrip-schema";
 
 export const WATCHLIST_RUN_SOURCE = "tripwatch:watchlist-run";
 export const FAILED_RERUN_COOLDOWN_MS = 60_000;
@@ -103,6 +105,10 @@ function officialUrlForItem(item: RunnableWatchItem): string | undefined {
 
   if (item.type === "ticket") {
     return ticketOfficialUrlFromParams(parseParamsJson(item.paramsJson));
+  }
+
+  if (item.type === "foresttrip") {
+    return getOfficialUrl("foresttrip");
   }
 
   return undefined;
@@ -220,6 +226,25 @@ async function runTicket(rawParams: unknown): Promise<TripWatchApiResponse<unkno
 
   return parsed.data.mode === "schedule" ? getTicketSchedule(parsed.data) : getTicketSeats(parsed.data);
 }
+async function runForesttrip(rawParams: unknown): Promise<TripWatchApiResponse<unknown>> {
+  if (typeof rawParams === "undefined") {
+    return errorIssues(rawParams, "저장된 자연휴양림 조건이 올바르지 않습니다.", "foresttrip-official-link", getOfficialUrl("foresttrip"));
+  }
+
+  const parsed = foresttripSearchSchema.safeParse(rawParams);
+
+  if (!parsed.success) {
+    return validationFailedResponse(
+      "저장된 자연휴양림 조건이 올바르지 않습니다.",
+      zodIssueMessages(parsed.error.issues),
+      "foresttrip-official-link",
+      getOfficialUrl("foresttrip")
+    );
+  }
+
+  return searchForesttrip(parsed.data);
+}
+
 
 async function dispatchWatchItem(item: RunnableWatchItem): Promise<TripWatchApiResponse<unknown>> {
   const rawParams = parseParamsJson(item.paramsJson);
@@ -239,6 +264,10 @@ async function dispatchWatchItem(item: RunnableWatchItem): Promise<TripWatchApiR
   if (item.type === "ticket") {
     return runTicket(rawParams);
   }
+  if (item.type === "foresttrip") {
+    return runForesttrip(rawParams);
+  }
+
 
   return failedResponse({
     source: WATCHLIST_RUN_SOURCE,
@@ -397,5 +426,5 @@ export function httpStatusForRunResponse(response: TripWatchApiResponse<unknown>
 }
 
 export function isWatchItemType(value: string): value is WatchItemType {
-  return value === "flight" || value === "express_bus" || value === "intercity_bus" || value === "ticket";
+  return value === "flight" || value === "express_bus" || value === "intercity_bus" || value === "ticket" || value === "foresttrip";
 }

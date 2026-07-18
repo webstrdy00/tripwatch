@@ -8,6 +8,7 @@ export const NAV_ITEMS = [
   { href: "/flights", label: "항공권" },
   { href: "/buses", label: "버스" },
   { href: "/tickets", label: "공연" },
+  { href: "/foresttrip", label: "자연휴양림" },
   { href: "/watchlist", label: "관심 조건" }
 ] as const;
 

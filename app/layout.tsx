@@ -4,8 +4,8 @@ import "@/app/globals.css";
 import { AppShell } from "@/components/layout/AppShell";
 
 export const metadata: Metadata = {
-  title: "TripWatch",
-  description: "TripWatch local dashboard skeleton"
+  title: "JariDash",
+  description: "JariDash personal travel and ticket dashboard"
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

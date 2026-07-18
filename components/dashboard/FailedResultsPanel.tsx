@@ -12,13 +12,15 @@ const TYPE_LABELS: Record<DashboardResultItem["type"], string> = {
   flight: "항공권",
   express_bus: "고속버스",
   intercity_bus: "시외버스",
-  ticket: "공연"
+  ticket: "공연",
+  foresttrip: "자연휴양림"
 };
 const TYPE_SEARCH_PATHS: Record<DashboardResultItem["type"], string> = {
   flight: "/flights",
   express_bus: "/buses",
   intercity_bus: "/buses",
-  ticket: "/tickets"
+  ticket: "/tickets",
+  foresttrip: "/foresttrip"
 };
 
 type Notice = {

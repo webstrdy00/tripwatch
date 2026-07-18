@@ -200,7 +200,7 @@ export function WatchlistTable({ initialItems }: { initialItems: WatchItemListIt
       ) : null}
 
       {items.length === 0 ? (
-        <EmptyState title="저장된 관심 조건이 없습니다." description="항공권, 버스, 공연 조건을 저장하면 이곳에 표시됩니다." />
+        <EmptyState title="저장된 관심 조건이 없습니다." description="항공권, 버스, 공연, 자연휴양림 조건을 저장하면 이곳에 표시됩니다." />
       ) : (
         <div className="table-shell">
           <table className="data-table min-w-[1120px]">

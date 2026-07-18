@@ -24,6 +24,11 @@ export function SummaryCards({ summary }: { summary: DashboardSummaryData }) {
       detail: "전체 다시 조회 기본 제외"
     },
     {
+      label: "자연휴양림 관심 조건",
+      value: formatNumber(summary.counts.foresttrips),
+      detail: "자연휴양림 빈 객실"
+    },
+    {
       label: "실패한 최근 조회",
       value: formatNumber(summary.failedResults.length),
       detail: `누적 실패 ${formatNumber(summary.counts.failedResults)}개`

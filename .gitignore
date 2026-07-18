@@ -51,8 +51,10 @@ htmlcov/
 docs/
 /docs
 docs/
+!/docs/
 /docs/*
-!/docs/helper-smoke-report.md
+!/docs/manual-test-v0.1.md
+!/docs/security-check-v0.1.md
 image/
 /image
 issues/

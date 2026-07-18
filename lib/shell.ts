@@ -54,6 +54,15 @@ export async function runHelperCommand<T = unknown>(
 
   const stdoutLimitBytes = options.stdoutLimitBytes ?? getDefaultStdoutLimit();
   const stderrLimitBytes = options.stderrLimitBytes ?? DEFAULT_STDERR_LIMIT_BYTES;
+  if (!Number.isFinite(stdoutLimitBytes) || !Number.isInteger(stdoutLimitBytes) || stdoutLimitBytes <= 0) {
+    throw new TripWatchError("VALIDATION_ERROR", "helper stdoutLimitBytes는 양의 정수여야 합니다.");
+  }
+
+  if (!Number.isFinite(stderrLimitBytes) || !Number.isInteger(stderrLimitBytes) || stderrLimitBytes <= 0) {
+    throw new TripWatchError("VALIDATION_ERROR", "helper stderrLimitBytes는 양의 정수여야 합니다.");
+  }
+
+  const childEnv = options.env ?? process.env;
 
   return new Promise<HelperCommandResult<T>>((resolve, reject) => {
     let stdout = "";
@@ -64,7 +73,7 @@ export async function runHelperCommand<T = unknown>(
 
     const child = spawn(command, [...args], {
       cwd: options.cwd,
-      env: options.env ?? process.env,
+      env: childEnv,
       shell: false,
       windowsHide: true
     });
@@ -123,9 +132,10 @@ export async function runHelperCommand<T = unknown>(
       settled = true;
       clearTimeout(timeout);
 
-      const maskedStderr = maskSecrets(stderr);
+      const maskedStderr = maskSecrets(stderr, { env: childEnv });
+      const stderrTruncated = stderrExceeded || maskedStderr.length > 500;
       const stderrSummary = maskedStderr
-        ? `${maskedStderr.slice(0, 500)}${stderrExceeded ? "\n[stderr truncated]" : ""}`
+        ? `${maskedStderr.slice(0, 500)}${stderrTruncated ? "\n[stderr truncated]" : ""}`
         : undefined;
 
       if (stdoutExceeded) {

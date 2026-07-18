@@ -4,6 +4,7 @@ import { busSearchSchema } from "@/lib/validation/bus-schema";
 import { watchItemTypeSchema } from "@/lib/validation/common-schema";
 import { flightWatchItemSchema } from "@/lib/validation/flight-schema";
 import { ticketLookupSchema } from "@/lib/validation/ticket-schema";
+import { foresttripSearchSchema } from "@/lib/validation/foresttrip-schema";
 
 const baseWatchItemSchema = z.object({
   title: z.string().trim().min(1).max(120),
@@ -15,7 +16,8 @@ export const watchItemParamsByType = {
   flight: flightWatchItemSchema,
   express_bus: busSearchSchema,
   intercity_bus: busSearchSchema,
-  ticket: ticketLookupSchema
+  ticket: ticketLookupSchema,
+  foresttrip: foresttripSearchSchema
 } as const;
 
 function parseParamsJson(value: string, ctx: z.RefinementCtx): unknown {

@@ -7,7 +7,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <header className="border-b border-line bg-white">
         <div className="mx-auto flex max-w-7xl flex-col gap-2 px-4 py-4 sm:px-6 lg:px-8">
           <Nav />
-          <div className="text-xs font-semibold text-slate-500">{SERVICE_NAME} v0.1 skeleton</div>
+          <div className="text-xs font-semibold text-slate-500">{SERVICE_NAME} v0.2 · 개인용 여행 조회 대시보드</div>
         </div>
       </header>
       <main className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">

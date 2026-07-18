@@ -35,6 +35,10 @@ export function maskSecrets(input: string, options: MaskSecretsOptions = {}): st
   for (const value of collectSecretValues(options)) {
     output = output.split(value).join("[REDACTED]");
   }
+  output = output.replace(
+    /((?:proxy-)?authorization\s*[:=]\s*)(?:bearer|basic)\s+[^"'\s,;]+/gi,
+    "$1[REDACTED]"
+  );
 
   output = output.replace(
     /((?:secret|token|password|passwd|pwd|api[_-]?key|credential|auth|session|cookie)[\w.-]*\s*[:=]\s*)(["']?)[^"'\s]+(\2)/gi,

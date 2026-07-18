@@ -26,6 +26,7 @@ export type DashboardSummaryData = {
     flights: number;
     buses: number;
     tickets: number;
+    foresttrips: number;
     queryResults: number;
     successResults: number;
     partialResults: number;
@@ -71,7 +72,7 @@ function asStatus(value: string): TripWatchStatus {
 }
 
 function asWatchItemType(value: string): WatchItemType {
-  if (value === "flight" || value === "express_bus" || value === "intercity_bus" || value === "ticket") {
+  if (value === "flight" || value === "express_bus" || value === "intercity_bus" || value === "ticket" || value === "foresttrip") {
     return value;
   }
 
@@ -172,6 +173,7 @@ export async function getDashboardSummary(): Promise<DashboardSummaryData> {
       flights: watchItems.filter((item) => item.type === "flight").length,
       buses: watchItems.filter((item) => item.type === "express_bus" || item.type === "intercity_bus").length,
       tickets: watchItems.filter((item) => item.type === "ticket").length,
+      foresttrips: watchItems.filter((item) => item.type === "foresttrip").length,
       queryResults,
       successResults,
       partialResults,

@@ -38,6 +38,7 @@ export type WatchlistBatchRunData = {
     type?: BatchWatchItemType;
     failedOnly: boolean;
     includeTickets: boolean;
+    includeForesttrip: boolean;
     limit: number;
   };
   checkedAt: string;
@@ -47,7 +48,7 @@ export type WatchlistBatchRunData = {
   results: BatchRunItemResult[];
 };
 
-const batchTypeSchema = z.enum(["flight", "express_bus", "intercity_bus", "ticket"]);
+const batchTypeSchema = z.enum(["flight", "express_bus", "intercity_bus", "ticket", "foresttrip"]);
 
 function normalizeInteger(value: unknown): unknown {
   if (typeof value === "string" && value.trim()) {
@@ -61,6 +62,7 @@ const runBatchSchema = z.object({
   type: batchTypeSchema.optional(),
   failedOnly: z.boolean().default(false),
   includeTickets: z.boolean().default(false),
+  includeForesttrip: z.boolean().default(false),
   limit: z
     .preprocess(normalizeInteger, z.number().int().min(1).default(MAX_BATCH_LIMIT))
     .transform((value) => Math.min(value, MAX_BATCH_LIMIT))
@@ -111,15 +113,25 @@ function targetTypes(input: RunBatchInput): string[] {
     return [];
   }
 
+  if (input.type === "foresttrip" && !input.includeForesttrip) {
+    return [];
+  }
+
   if (input.type) {
     return [input.type];
   }
 
+  const types = ["flight", "express_bus", "intercity_bus"];
+
   if (input.includeTickets) {
-    return ["flight", "express_bus", "intercity_bus", "ticket"];
+    types.push("ticket");
   }
 
-  return ["flight", "express_bus", "intercity_bus"];
+  if (input.includeForesttrip) {
+    types.push("foresttrip");
+  }
+
+  return types;
 }
 
 function latestResult(item: BatchWatchItem): Pick<QueryResult, "status" | "checkedAt"> | undefined {
@@ -182,6 +194,10 @@ function batchSummary(data: WatchlistBatchRunData, status: TripWatchStatus): str
   if (data.totalCandidates === 0) {
     if (data.requested.type === "ticket" && !data.requested.includeTickets) {
       return "공연 관심 조건은 includeTickets=true일 때만 다시 조회합니다.";
+    }
+
+    if (data.requested.type === "foresttrip" && !data.requested.includeForesttrip) {
+      return "자연휴양림 관심 조건은 includeForesttrip=true일 때만 다시 조회합니다.";
     }
 
     return "다시 조회할 관심 조건이 없습니다.";
@@ -272,6 +288,7 @@ export async function POST(request: Request) {
         type: input.type,
         failedOnly: input.failedOnly,
         includeTickets: input.includeTickets,
+        includeForesttrip: input.includeForesttrip,
         limit: input.limit
       },
       checkedAt: new Date().toISOString(),

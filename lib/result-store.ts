@@ -32,7 +32,7 @@ export async function createQueryResultFromResponse<T>({
       source: response.source,
       checkedAt: toCheckedAtDate(response.checkedAt),
       summary: response.summary,
-      officialUrl: getSafeOfficialUrl(type, response.officialUrl),
+      officialUrl: type === "foresttrip" ? getSafeOfficialUrl("foresttrip") : getSafeOfficialUrl(type, response.officialUrl),
       resultJson: JSON.stringify(response.data ?? {}),
       errorCode: response.error?.code,
       errorText: response.error ? summarizeError(response.error.message) : undefined

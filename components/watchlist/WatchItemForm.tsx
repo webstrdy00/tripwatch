@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import type { WatchItemType } from "@/lib/validation/common-schema";
+import { getKstCalendarDate } from "@/lib/dates";
 
 export type WatchItemCreatePayload = {
   type: WatchItemType;
@@ -11,7 +12,7 @@ export type WatchItemCreatePayload = {
   memo?: string;
 };
 
-const SAMPLE_PARAMS: Record<WatchItemType, string> = {
+const SAMPLE_PARAMS: Record<Exclude<WatchItemType, "foresttrip">, string> = {
   flight: JSON.stringify(
     {
       from: "ICN",
@@ -57,11 +58,28 @@ const SAMPLE_PARAMS: Record<WatchItemType, string> = {
   )
 };
 
+function sampleParams(type: WatchItemType): string {
+  if (type === "foresttrip") {
+    return JSON.stringify(
+      {
+        forestName: "국립유명산자연휴양림",
+        date: getKstCalendarDate(),
+        category: "01"
+      },
+      null,
+      2
+    );
+  }
+
+  return SAMPLE_PARAMS[type];
+}
+
 const DEFAULT_TITLES: Record<WatchItemType, string> = {
   flight: "ICN → NRT 왕복",
   express_bus: "서울경부 → 부산",
   intercity_bus: "동서울 → 속초",
-  ticket: "인터파크 공연"
+  ticket: "인터파크 공연",
+  foresttrip: "국립유명산자연휴양림 숙박"
 };
 
 export function WatchItemForm({
@@ -74,12 +92,12 @@ export function WatchItemForm({
   const [type, setType] = useState<WatchItemType>("flight");
   const [title, setTitle] = useState(DEFAULT_TITLES.flight);
   const [memo, setMemo] = useState("");
-  const [paramsJson, setParamsJson] = useState(SAMPLE_PARAMS.flight);
+  const [paramsJson, setParamsJson] = useState(sampleParams("flight"));
 
   function handleTypeChange(nextType: WatchItemType) {
     setType(nextType);
     setTitle(DEFAULT_TITLES[nextType]);
-    setParamsJson(SAMPLE_PARAMS[nextType]);
+    setParamsJson(sampleParams(nextType));
   }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -102,6 +120,7 @@ export function WatchItemForm({
             <option value="express_bus">고속버스</option>
             <option value="intercity_bus">시외버스</option>
             <option value="ticket">공연</option>
+            <option value="foresttrip">자연휴양림</option>
           </select>
         </label>
         <label className="form-field">

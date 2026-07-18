@@ -49,7 +49,7 @@ export default async function WatchlistPage() {
 
   return (
     <div className="grid gap-5">
-      <PageTitle title="관심 조건" description="저장한 항공권, 버스, 공연 조건을 관리합니다." />
+      <PageTitle title="관심 조건" description="저장한 항공권, 버스, 공연, 자연휴양림 조건을 관리합니다." />
       {error ? <ErrorCard title="관심 조건을 불러오지 못했습니다." message={error} /> : null}
       <WatchlistTable initialItems={items} />
       <p className="text-sm font-semibold text-slate-700">{SAFETY_NOTICE}</p>

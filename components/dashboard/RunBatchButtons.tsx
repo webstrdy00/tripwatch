@@ -6,9 +6,10 @@ import { useState } from "react";
 import type { TripWatchApiResponse } from "@/lib/api-response";
 
 type BatchRequest = {
-  type?: "flight" | "express_bus" | "intercity_bus" | "ticket";
+  type?: "flight" | "express_bus" | "intercity_bus" | "ticket" | "foresttrip";
   failedOnly?: boolean;
   includeTickets?: boolean;
+  includeForesttrip?: boolean;
   limit?: number;
 };
 
@@ -63,6 +64,14 @@ const BUTTONS: {
       includeTickets: true
     },
     confirmMessage: "공연은 기본 전체 다시 조회에서 제외됩니다. 이 요청에만 공연을 포함해 다시 조회할까요?"
+  },
+  {
+    id: "foresttrip",
+    label: "자연휴양림만",
+    body: {
+      type: "foresttrip",
+      includeForesttrip: true
+    }
   },
   {
     id: "failed",
@@ -182,7 +191,7 @@ export function RunBatchButtons() {
         </div>
       </div>
       <p className="mt-3 text-xs font-bold text-slate-500">
-        전체 다시 조회와 실패만 조회는 공연을 제외합니다. 공연은 공연만 버튼에서 확인 후 실행합니다.
+        전체 다시 조회와 실패만 조회는 공연과 자연휴양림을 제외합니다. 공연과 자연휴양림은 각각 전용 버튼을 눌러 수동 실행합니다. 각 요청은 순차적으로 최대 10개만 실행하며 실패해도 재시도하지 않습니다.
       </p>
 
       {notice ? (

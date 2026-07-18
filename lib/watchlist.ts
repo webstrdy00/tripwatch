@@ -56,7 +56,7 @@ function asStatus(value: string): TripWatchStatus {
 }
 
 function asWatchItemType(value: string): WatchItemType {
-  if (value === "flight" || value === "express_bus" || value === "intercity_bus" || value === "ticket") {
+  if (value === "flight" || value === "express_bus" || value === "intercity_bus" || value === "ticket" || value === "foresttrip") {
     return value;
   }
 
@@ -133,6 +133,12 @@ export function summarizeWatchItemParams(item: Pick<WatchItemListItem, "type" | 
     return `${departName} → ${arriveName} / ${date} / ${time} 이후`;
   }
 
+  if (item.type === "foresttrip") {
+    const forestName = getString(params, "forestName") ?? "?";
+    const date = getString(params, "date") ?? "?";
+    const category = getString(params, "category") ?? "?";
+    return `${forestName} / ${date} / ${category}`;
+  }
   const input = getString(params, "input") ?? "?";
   const mode = getString(params, "mode") ?? "seats";
   return `${input} / ${mode}`;

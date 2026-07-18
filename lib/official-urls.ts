@@ -10,19 +10,21 @@ export const OFFICIAL_URLS = {
   ticket: {
     interpark: "https://tickets.interpark.com",
     yes24: "https://ticket.yes24.com"
-  }
+  },
+  foresttrip: "https://foresttrip.go.kr/index.jsp"
 } as const;
 
-export type OfficialUrlType = "flight" | "express_bus" | "intercity_bus" | "ticket";
+export type OfficialUrlType = "flight" | "express_bus" | "intercity_bus" | "ticket" | "foresttrip";
 const OFFICIAL_HOSTS: Record<OfficialUrlType, readonly string[]> = {
   flight: ["google.com"],
   express_bus: ["kobus.co.kr"],
   intercity_bus: ["tmoney.co.kr"],
-  ticket: ["tickets.interpark.com", "ticket.yes24.com"]
+  ticket: ["tickets.interpark.com", "ticket.yes24.com"],
+  foresttrip: ["foresttrip.go.kr"]
 };
 
 function isOfficialUrlType(value: string): value is OfficialUrlType {
-  return value === "flight" || value === "express_bus" || value === "intercity_bus" || value === "ticket";
+  return value === "flight" || value === "express_bus" || value === "intercity_bus" || value === "ticket" || value === "foresttrip";
 }
 
 function defaultOfficialUrl(type: OfficialUrlType): string | undefined {
@@ -36,6 +38,10 @@ function defaultOfficialUrl(type: OfficialUrlType): string | undefined {
 
   if (type === "intercity_bus") {
     return buildIntercityBusOfficialUrl();
+  }
+
+  if (type === "foresttrip") {
+    return OFFICIAL_URLS.foresttrip;
   }
 
   return undefined;
@@ -59,6 +65,9 @@ function isAllowedOfficialUrl(type: OfficialUrlType, value: string): boolean {
 export function getSafeOfficialUrl(type: string, candidate?: string, fallback?: string): string | undefined {
   if (!isOfficialUrlType(type)) {
     return undefined;
+  }
+  if (type === "foresttrip") {
+    return OFFICIAL_URLS.foresttrip;
   }
 
   if (candidate && isAllowedOfficialUrl(type, candidate)) {
