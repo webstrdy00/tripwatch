@@ -16,6 +16,7 @@ model WatchItem {
   createdAt  DateTime      @default(now())
   updatedAt  DateTime      @updatedAt
   results    QueryResult[]
+  alertRule  AlertRule?
 
   @@index([type])
   @@index([enabled])
@@ -40,4 +41,40 @@ model QueryResult {
   @@index([type])
   @@index([status])
   @@index([checkedAt])
+}
+model AlertRule {
+  id                    String   @id @default(cuid())
+  watchItemId           String   @unique
+  channel               String   @default("telegram")
+  conditionJson         String
+  enabled               Boolean  @default(false)
+  outboundOptIn         Boolean  @default(false)
+  configVersion         Int      @default(1)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  lastProviderRunAt     DateTime?
+
+  latestOutcome         String   @default("never")
+  latestOutcomeAt       DateTime?
+  latestOutcomeCode     String?
+
+  baselineState         String   @default("never")
+  baselineFingerprint   String?
+  baselineTransitionSeq Int      @default(0)
+  baselineAt            DateTime?
+
+  deliveryState         String   @default("never")
+  attemptId             String?
+  attemptRunId          String?
+  attemptFingerprint    String?
+  attemptTransitionSeq  Int?
+  attemptResultId       String?
+  attemptResultType     String?
+  lastAttemptAt         DateTime?
+  terminalAt            DateTime?
+  deliveryCode          String?
+
+  watchItem             WatchItem @relation(fields: [watchItemId], references: [id], onDelete: Restrict)
+
+  @@index([enabled, lastProviderRunAt, createdAt, id])
 }

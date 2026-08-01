@@ -2,11 +2,13 @@
 
 import { useRef, useState } from "react";
 
+import { AlertRuleEditor } from "@/components/watchlist/AlertRuleEditor";
 import { WatchItemActions, type WatchItemPatchPayload } from "@/components/watchlist/WatchItemActions";
 import { WatchItemForm, type WatchItemCreatePayload } from "@/components/watchlist/WatchItemForm";
 import { WatchItemResultSummary, WatchItemSummary, formatDateTime } from "@/components/watchlist/WatchItemSummary";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { TripWatchApiResponse } from "@/lib/api-response";
+import { replaceWatchItemById } from "@/lib/watchlist-client-state";
 import type { WatchItemListItem } from "@/lib/watchlist";
 
 type Notice = {
@@ -104,7 +106,7 @@ export function WatchlistTable({ initialItems }: { initialItems: WatchItemListIt
       const updatedItem = result.data?.item;
 
       if (result.status === "success" && updatedItem) {
-        setItems((current) => current.map((item) => (item.id === id ? updatedItem : item)));
+        setItems((current) => replaceWatchItemById(current, updatedItem));
         setNotice({ tone: "success", message: result.summary ?? "관심 조건을 수정했습니다." });
         return;
       }
@@ -237,14 +239,24 @@ export function WatchlistTable({ initialItems }: { initialItems: WatchItemListIt
                   </td>
                   <td className="whitespace-nowrap text-sm font-medium text-slate-700">{formatDateTime(item.latestResult?.checkedAt)}</td>
                   <td>
-                    <WatchItemActions
-                      item={item}
-                      busy={Boolean(busyId)}
-                      running={runningId === item.id}
-                      onPatch={patchItem}
-                      onDelete={deleteItem}
-                      onRun={runItem}
-                    />
+                    <div className="grid min-w-60 gap-3">
+                      <WatchItemActions
+                        item={item}
+                        busy={Boolean(busyId)}
+                        running={runningId === item.id}
+                        onPatch={patchItem}
+                        onDelete={deleteItem}
+                        onRun={runItem}
+                      />
+                      <AlertRuleEditor
+                        item={item}
+                        busy={Boolean(busyId)}
+                        onItemMutation={(updatedItem) => {
+                          setItems((current) => replaceWatchItemById(current, updatedItem));
+                          setNotice({ tone: "success", message: "알림 설정을 저장했습니다." });
+                        }}
+                      />
+                    </div>
                   </td>
                 </tr>
               ))}

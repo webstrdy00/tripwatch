@@ -1,4 +1,5 @@
 import type { QueryResult, WatchItem } from "@prisma/client";
+import type { AlertMode } from "@/lib/alerts/types";
 
 import { failedResponse, type TripWatchApiResponse } from "@/lib/api-response";
 import { db } from "@/lib/db";
@@ -26,9 +27,14 @@ export const FAILED_RERUN_COOLDOWN_MS = 60_000;
 
 type RunnableWatchItem = Pick<WatchItem, "id" | "type" | "title" | "paramsJson" | "enabled">;
 
+export type StoredWatchItemRunResult = Pick<QueryResult, "id" | "type" | "checkedAt" | "createdAt">;
+
 export type WatchItemRunResult = {
   item?: RunnableWatchItem;
   response: TripWatchApiResponse<unknown>;
+  alertMode?: AlertMode;
+  providerDispatched: boolean;
+  storedResult?: StoredWatchItemRunResult;
 };
 
 function parseParamsJson(paramsJson: string): unknown {
@@ -128,15 +134,48 @@ function zodIssueMessages(issues: { message: string }[]): string {
   return issues.map((issue) => issue.message).join("; ");
 }
 
-async function saveRunResult(item: RunnableWatchItem, response: TripWatchApiResponse<unknown>): Promise<void> {
-  await createQueryResultFromResponse({
+function alertModeForItem(item: RunnableWatchItem): AlertMode | undefined {
+  const rawParams = parseParamsJson(item.paramsJson);
+
+  if (item.type === "flight") {
+    return hasCompareMonthParams(rawParams) ? "flight_compare_month" : "flight_search";
+  }
+
+  if (item.type === "express_bus") {
+    return "express_bus_search";
+  }
+
+  if (item.type === "intercity_bus") {
+    return "intercity_bus_search";
+  }
+
+  if (item.type === "ticket") {
+    const parsed = ticketLookupSchema.safeParse(rawParams);
+    return parsed.success && parsed.data.mode === "seats" ? "ticket_seats" : undefined;
+  }
+
+  return item.type === "foresttrip" ? "foresttrip_search" : undefined;
+}
+
+async function saveRunResult(
+  item: RunnableWatchItem,
+  response: TripWatchApiResponse<unknown>
+): Promise<StoredWatchItemRunResult> {
+  const result = await createQueryResultFromResponse({
     type: item.type,
     response,
     watchItemId: item.id
   });
+
+  return {
+    id: result.id,
+    type: result.type,
+    checkedAt: result.checkedAt,
+    createdAt: result.createdAt
+  };
 }
 
-async function runFlight(rawParams: unknown): Promise<TripWatchApiResponse<unknown>> {
+async function runFlight(rawParams: unknown, markProviderDispatched: () => void): Promise<TripWatchApiResponse<unknown>> {
   if (typeof rawParams === "undefined") {
     return errorIssues(rawParams, "저장된 항공권 조건이 올바르지 않습니다.", "google-flights-link", getOfficialUrl("flight"));
   }
@@ -153,6 +192,7 @@ async function runFlight(rawParams: unknown): Promise<TripWatchApiResponse<unkno
       );
     }
 
+    markProviderDispatched();
     return compareFlightMonth(parsed.data);
   }
 
@@ -167,10 +207,11 @@ async function runFlight(rawParams: unknown): Promise<TripWatchApiResponse<unkno
     );
   }
 
+  markProviderDispatched();
   return searchFlights(parsed.data);
 }
 
-async function runExpressBus(rawParams: unknown): Promise<TripWatchApiResponse<unknown>> {
+async function runExpressBus(rawParams: unknown, markProviderDispatched: () => void): Promise<TripWatchApiResponse<unknown>> {
   if (typeof rawParams === "undefined") {
     return errorIssues(rawParams, "저장된 고속버스 조건이 올바르지 않습니다.", "kobus-link", buildExpressBusOfficialUrl());
   }
@@ -186,10 +227,11 @@ async function runExpressBus(rawParams: unknown): Promise<TripWatchApiResponse<u
     );
   }
 
+  markProviderDispatched();
   return searchExpressBuses(parsed.data);
 }
 
-async function runIntercityBus(rawParams: unknown): Promise<TripWatchApiResponse<unknown>> {
+async function runIntercityBus(rawParams: unknown, markProviderDispatched: () => void): Promise<TripWatchApiResponse<unknown>> {
   if (typeof rawParams === "undefined") {
     return errorIssues(rawParams, "저장된 시외버스 조건이 올바르지 않습니다.", "tmoney-link", buildIntercityBusOfficialUrl());
   }
@@ -205,10 +247,11 @@ async function runIntercityBus(rawParams: unknown): Promise<TripWatchApiResponse
     );
   }
 
+  markProviderDispatched();
   return searchIntercityBuses(parsed.data);
 }
 
-async function runTicket(rawParams: unknown): Promise<TripWatchApiResponse<unknown>> {
+async function runTicket(rawParams: unknown, markProviderDispatched: () => void): Promise<TripWatchApiResponse<unknown>> {
   if (typeof rawParams === "undefined") {
     return errorIssues(rawParams, "저장된 공연 조건이 올바르지 않습니다.", "ticket-official-link");
   }
@@ -224,9 +267,11 @@ async function runTicket(rawParams: unknown): Promise<TripWatchApiResponse<unkno
     );
   }
 
+  markProviderDispatched();
   return parsed.data.mode === "schedule" ? getTicketSchedule(parsed.data) : getTicketSeats(parsed.data);
 }
-async function runForesttrip(rawParams: unknown): Promise<TripWatchApiResponse<unknown>> {
+
+async function runForesttrip(rawParams: unknown, markProviderDispatched: () => void): Promise<TripWatchApiResponse<unknown>> {
   if (typeof rawParams === "undefined") {
     return errorIssues(rawParams, "저장된 자연휴양림 조건이 올바르지 않습니다.", "foresttrip-official-link", getOfficialUrl("foresttrip"));
   }
@@ -242,32 +287,35 @@ async function runForesttrip(rawParams: unknown): Promise<TripWatchApiResponse<u
     );
   }
 
+  markProviderDispatched();
   return searchForesttrip(parsed.data);
 }
 
-
-async function dispatchWatchItem(item: RunnableWatchItem): Promise<TripWatchApiResponse<unknown>> {
+async function dispatchWatchItem(
+  item: RunnableWatchItem,
+  markProviderDispatched: () => void
+): Promise<TripWatchApiResponse<unknown>> {
   const rawParams = parseParamsJson(item.paramsJson);
 
   if (item.type === "flight") {
-    return runFlight(rawParams);
+    return runFlight(rawParams, markProviderDispatched);
   }
 
   if (item.type === "express_bus") {
-    return runExpressBus(rawParams);
+    return runExpressBus(rawParams, markProviderDispatched);
   }
 
   if (item.type === "intercity_bus") {
-    return runIntercityBus(rawParams);
+    return runIntercityBus(rawParams, markProviderDispatched);
   }
 
   if (item.type === "ticket") {
-    return runTicket(rawParams);
-  }
-  if (item.type === "foresttrip") {
-    return runForesttrip(rawParams);
+    return runTicket(rawParams, markProviderDispatched);
   }
 
+  if (item.type === "foresttrip") {
+    return runForesttrip(rawParams, markProviderDispatched);
+  }
 
   return failedResponse({
     source: WATCHLIST_RUN_SOURCE,
@@ -280,6 +328,8 @@ async function dispatchWatchItem(item: RunnableWatchItem): Promise<TripWatchApiR
 }
 
 export async function runWatchItem(item: RunnableWatchItem): Promise<WatchItemRunResult> {
+  const alertMode = alertModeForItem(item);
+
   if (!item.enabled) {
     const response = failedResponse({
       source: WATCHLIST_RUN_SOURCE,
@@ -290,19 +340,24 @@ export async function runWatchItem(item: RunnableWatchItem): Promise<WatchItemRu
         message: "비활성 관심 조건은 다시 조회할 수 없습니다."
       }
     });
-
-    await saveRunResult(item, response);
+    const storedResult = await saveRunResult(item, response);
 
     return {
       item,
-      response
+      response,
+      alertMode,
+      providerDispatched: false,
+      storedResult
     };
   }
 
   let response: TripWatchApiResponse<unknown>;
+  let providerDispatched = false;
 
   try {
-    response = await dispatchWatchItem(item);
+    response = await dispatchWatchItem(item, () => {
+      providerDispatched = true;
+    });
   } catch (error) {
     const message = summarizeError(error);
 
@@ -317,11 +372,14 @@ export async function runWatchItem(item: RunnableWatchItem): Promise<WatchItemRu
     });
   }
 
-  await saveRunResult(item, response);
+  const storedResult = await saveRunResult(item, response);
 
   return {
     item,
-    response
+    response,
+    alertMode,
+    providerDispatched,
+    storedResult
   };
 }
 
@@ -361,7 +419,8 @@ export async function runWatchItemById(id: string): Promise<WatchItemRunResult> 
           code: "WATCH_ITEM_NOT_FOUND",
           message: "관심 조건을 찾을 수 없습니다."
         }
-      })
+      }),
+      providerDispatched: false
     };
   }
 
@@ -376,7 +435,9 @@ export async function runWatchItemById(id: string): Promise<WatchItemRunResult> 
           code: "FAILED_RERUN_COOLDOWN",
           message: "마지막 실패 후 1분이 지나야 다시 조회할 수 있습니다."
         }
-      })
+      }),
+      alertMode: alertModeForItem(item),
+      providerDispatched: false
     };
   }
 

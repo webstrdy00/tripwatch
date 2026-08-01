@@ -84,7 +84,7 @@ POST /api/watchlist/run-batch
 | `NOT_RUN` | 명시적 opt-in이 없어 의도적으로 실행하지 않았다. |
 | `BLOCKED` | 실행을 시도했으나 환경·helper·credential·의존성·외부 준비 상태 때문에 완료할 수 없었다. |
 
-현재 관찰은 서로 구분한다: provider에 접속하지 않는 pure Foresttrip contract smoke는 `PASS=8`; Foresttrip safe helper cases는 `PASS=5`, `BLOCKED=1`, helper subprocess `6`건과 WSL path-resolution infrastructure subprocess `1`건이며 live/attempted/provider lookup은 모두 `0`이다. 소유한 임시 DB smoke는 `PASS=27`, `FAIL=0`, `BLOCKED=0`, security scan은 `HIGH=0`, `REVIEW=0`, `INFO=39`, `ALLOWED=12`다. Foresttrip Phase 0 helper artifact는 `PASS`; Playwright dependency probe는 `BLOCKED`; live는 `NOT_RUN`이다. 이 관찰값 어느 것도 live 정상 조회 PASS를 뜻하지 않는다.
+2026-07-18 non-live 재검증 관찰은 서로 구분한다: provider에 접속하지 않는 pure Foresttrip contract smoke는 `PASS=8`, `FAIL=0`, `NOT_RUN=0`, `BLOCKED=0`; Foresttrip safe helper cases는 `PASS=5`, `BLOCKED=1`, helper subprocess `6`건과 WSL path-resolution infrastructure subprocess `1`건이며 live/attempted/provider lookup은 모두 `0`이다. 소유한 임시 DB smoke는 `PASS=27`, `FAIL=0`, `NOT_RUN=0`, `BLOCKED=0`이고 temp directory cleanup도 `PASS`다. security scan은 `HIGH=0`, `REVIEW=0`, `INFO=43`, `ALLOWED=12`다. pinned helper artifact는 `PASS`; Playwright dependency probe는 `BLOCKED`; live는 `NOT_RUN`이다. 이 관찰값 어느 것도 live 정상 조회 PASS를 뜻하지 않는다.
 
 안전한 helper artifact와 provider 비접속 입력·credential·dependency probe는 다음 명령으로 확인한다.
 
@@ -92,7 +92,7 @@ POST /api/watchlist/run-batch
 npx tsx scripts/helper-smoke.ts --only=foresttrip-vacancy
 ```
 
-실행 가능한 전체 절차와 기록 양식은 [v0.2 수동 QA](docs/manual-test-v0.2.md), 보안 증적은 [v0.2 보안 점검](docs/security-check-v0.2.md)를 따른다. live는 이들 문서의 마지막 opt-in 단계이며 자동 실행하지 않는다.
+실행 가능한 전체 절차와 기록 양식은 [v0.2 수동 QA](docs/manual-test-v0.2.md), 보안 증적은 [v0.2 보안 점검](docs/security-check-v0.2.md), 기능별 완료·보류 구분은 [구현 상태](docs/IMPLEMENTATION_STATUS.md)를 따른다. live는 이들 문서의 마지막 opt-in 단계이며 자동 실행하지 않는다.
 
 ## 임시 DB 수동 확인
 

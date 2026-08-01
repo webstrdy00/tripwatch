@@ -10,7 +10,7 @@ import { getOfficialUrl } from "@/lib/official-urls";
 import { runHelperCommand } from "@/lib/shell";
 import type { ForesttripHelperPayload, ForesttripSearchInput } from "@/lib/validation/foresttrip-schema";
 
-const HELPER_ID = "foresttrip-vacancy";
+export const FORESTTRIP_LIVE_SOURCE = "foresttrip-vacancy";
 const MOCK_SOURCE = "mock-foresttrip-helper";
 const PRE_SPAWN_SOURCE = "foresttrip-official-link";
 const TIMEOUT_MS = 60_000;
@@ -18,7 +18,7 @@ const STDOUT_LIMIT_BYTES = 1024 * 1024;
 const STDERR_LIMIT_BYTES = 64 * 1024;
 const CREDENTIAL_NAMES = ["KSKILL_FORESTTRIP_ID", "KSKILL_FORESTTRIP_PASSWORD"] as const;
 
-type ForesttripResponseSource = typeof HELPER_ID | typeof MOCK_SOURCE | typeof PRE_SPAWN_SOURCE;
+type ForesttripResponseSource = typeof FORESTTRIP_LIVE_SOURCE | typeof MOCK_SOURCE | typeof PRE_SPAWN_SOURCE;
 
 type RuntimeConfiguration = {
   scriptPath: string;
@@ -68,7 +68,7 @@ function runtimeConfiguration(): RuntimeConfiguration {
     throw missingEnvironmentError(["HOME", "PATH"]);
   }
 
-  const scriptPath = join(home, ".agents", "skills", HELPER_ID, "scripts", "run_foresttrip_vacancy.py");
+  const scriptPath = join(home, ".agents", "skills", FORESTTRIP_LIVE_SOURCE, "scripts", "run_foresttrip_vacancy.py");
   try {
     accessSync(scriptPath, constants.R_OK);
     if (!statSync(scriptPath).isFile()) {
@@ -179,12 +179,12 @@ export async function searchForesttrip(input: ForesttripSearchInput): Promise<Tr
     });
     const data = normalizeRuntimePayload(result.data, input, startedKstDate, getKstCalendarDate());
     return successResponse({
-      source: HELPER_ID,
+      source: FORESTTRIP_LIVE_SOURCE,
       officialUrl: getOfficialUrl("foresttrip"),
       summary: "자연휴양림 조회 결과입니다.",
       data
     });
   } catch (error) {
-    return failedForesttripResponse(error, HELPER_ID);
+    return failedForesttripResponse(error, FORESTTRIP_LIVE_SOURCE);
   }
 }

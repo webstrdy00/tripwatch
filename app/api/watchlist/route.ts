@@ -1,58 +1,21 @@
 import { NextResponse } from "next/server";
-import { ZodError } from "zod";
 
-import { failedResponse, parseJsonBodyWithSchema, successResponse } from "@/lib/api-response";
+import { parseJsonBodyWithSchema, successResponse } from "@/lib/api-response";
+import { buildApiRouteError } from "@/lib/api-route-error";
 import { db } from "@/lib/db";
-import { toApiError, TripWatchError } from "@/lib/errors";
-import { serializeWatchItems } from "@/lib/watchlist";
+import { TripWatchError } from "@/lib/errors";
+import { assertLocalOperatorRequest } from "@/lib/security/local-operator";
+import { serializeWatchItems, watchItemInclude } from "@/lib/watchlist";
 import { watchItemCreateSchema, watchItemListQuerySchema } from "@/lib/validation/watchlist-schema";
 
 const SOURCE = "tripwatch:watchlist";
 
 export const dynamic = "force-dynamic";
 
-const watchItemInclude = {
-  results: {
-    orderBy: [
-      {
-        checkedAt: "desc" as const
-      },
-      {
-        createdAt: "desc" as const
-      },
-      {
-        id: "desc" as const
-      }
-    ],
-    take: 1
-  }
-};
-
-function errorStatus(error: unknown): number {
-  if (error instanceof TripWatchError) {
-    if (error.code === "VALIDATION_ERROR") {
-      return 400;
-    }
-
-    if (error.code === "NOT_FOUND") {
-      return 404;
-    }
-  }
-
-  return 500;
-}
-
 function jsonError(error: unknown) {
-  const apiError = toApiError(error);
+  const routeError = buildApiRouteError(error, SOURCE);
 
-  return NextResponse.json(
-    failedResponse({
-      source: SOURCE,
-      summary: apiError.message,
-      error: apiError
-    }),
-    { status: errorStatus(error) }
-  );
+  return NextResponse.json(routeError.body, { status: routeError.status });
 }
 
 function parseListQuery(request: Request) {
@@ -73,6 +36,7 @@ function parseListQuery(request: Request) {
 
 export async function GET(request: Request) {
   try {
+    assertLocalOperatorRequest(request);
     const query = parseListQuery(request);
     const items = await db.watchItem.findMany({
       where: {
@@ -101,6 +65,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    assertLocalOperatorRequest(request);
     const input = await parseJsonBodyWithSchema(request, watchItemCreateSchema);
     const item = await db.watchItem.create({
       data: {
@@ -124,15 +89,6 @@ export async function POST(request: Request) {
       { status: 201 }
     );
   } catch (error) {
-    if (error instanceof ZodError) {
-      return jsonError(
-        new TripWatchError("VALIDATION_ERROR", "요청 값이 올바르지 않습니다.", {
-          raw: error.issues.map((issue) => issue.message).join("; "),
-          cause: error
-        })
-      );
-    }
-
     return jsonError(error);
   }
 }

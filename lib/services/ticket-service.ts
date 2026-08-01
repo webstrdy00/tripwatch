@@ -20,13 +20,15 @@ const SEATS_TIMEOUT_MS = 60_000;
 const STDOUT_LIMIT_BYTES = 1024 * 1024;
 const STDERR_LIMIT_BYTES = 64 * 1024;
 
+export const TICKET_LIVE_SOURCE = "ticket-availability";
+
 const TICKET_HELPER = {
-  id: "ticket-availability",
+  id: TICKET_LIVE_SOURCE,
   command: "python3",
   scriptPath: join(process.env.HOME ?? "/home/donghwi", ".agents", "skills", "ticket-availability", "scripts", "ticket_availability.py")
 } as const;
 
-type TicketResponseSource = "ticket-availability" | "mock-ticket-helper" | "ticket-official-link";
+type TicketResponseSource = typeof TICKET_LIVE_SOURCE | "mock-ticket-helper" | "ticket-official-link";
 
 function useMockHelpers(): boolean {
   return process.env.TRIPWATCH_USE_MOCK_HELPERS === "true";
@@ -86,7 +88,7 @@ function responseFromNormalized<T>(
 function failedTicketResponse<T>(
   error: unknown,
   officialUrl: string,
-  source: TicketResponseSource = "ticket-availability"
+  source: TicketResponseSource = TICKET_LIVE_SOURCE
 ): TripWatchApiResponse<T> {
   const apiError = toApiError(error);
   const publicError =
@@ -225,7 +227,7 @@ export async function getTicketSchedule(input: TicketLookupInput): Promise<TripW
 
   try {
     const payload = await runTicketHelper<unknown>(argsForSchedule(target), SCHEDULE_TIMEOUT_MS);
-    const response = responseFromNormalized(normalizeSchedule(payload, target, officialUrl), "ticket-availability");
+    const response = responseFromNormalized(normalizeSchedule(payload, target, officialUrl), TICKET_LIVE_SOURCE);
 
     if (response.data?.performances.length === 0) {
       return noScheduleResponse(target, officialUrl);
@@ -254,7 +256,7 @@ export async function getTicketSeats(input: TicketLookupInput): Promise<TripWatc
 
   try {
     const payload = await runTicketHelper<unknown>(argsForSeats(target), SEATS_TIMEOUT_MS);
-    return responseFromNormalized(normalizeSeats(payload, target, officialUrl), "ticket-availability");
+    return responseFromNormalized(normalizeSeats(payload, target, officialUrl), TICKET_LIVE_SOURCE);
   } catch (error) {
     if (useMockHelpers() && error instanceof TripWatchError && error.code === "HELPER_FAILED") {
       return mockSeatsResponse(target, officialUrl, "helper 실패 fallback");

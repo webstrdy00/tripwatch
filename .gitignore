@@ -55,6 +55,9 @@ docs/
 /docs/*
 !/docs/manual-test-v0.1.md
 !/docs/security-check-v0.1.md
+!/docs/manual-test-v0.2.md
+!/docs/security-check-v0.2.md
+!/docs/IMPLEMENTATION_STATUS.md
 image/
 /image
 issues/

@@ -77,7 +77,12 @@ async function request(baseUrl: string, path: string, init: RequestInit = {}, ti
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${baseUrl}${path}`, { ...init, signal: controller.signal, redirect: "error" });
+    const headers = new Headers(init.headers);
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(init.method ?? "GET")) {
+      if (!headers.has("origin")) headers.set("origin", "http://127.0.0.1:3000");
+      if (!headers.has("sec-fetch-site")) headers.set("sec-fetch-site", "same-origin");
+    }
+    const response = await fetch(`${baseUrl}${path}`, { ...init, headers, signal: controller.signal, redirect: "error" });
     const clone = response.clone();
     const body = await clone.text();
     responseBodies.push(body);
@@ -89,11 +94,11 @@ async function request(baseUrl: string, path: string, init: RequestInit = {}, ti
 }
 
 function json(body: unknown): RequestInit {
-  return { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) };
+  return { method: "POST", headers: { "content-type": "application/json", origin: "http://127.0.0.1:3000", "sec-fetch-site": "same-origin" }, body: JSON.stringify(body) };
 }
 
 function patch(body: unknown): RequestInit {
-  return { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) };
+  return { method: "PATCH", headers: { "content-type": "application/json", origin: "http://127.0.0.1:3000", "sec-fetch-site": "same-origin" }, body: JSON.stringify(body) };
 }
 
 function futureDate(days: number): string {
@@ -231,6 +236,168 @@ async function foresttripReadOnlyPhase(): Promise<void> {
   });
 }
 
+const PUBLIC_ALERT_RULE_KEYS = [
+  "id", "watchItemId", "channel", "condition", "enabled", "outboundOptIn", "configVersion",
+  "latestOutcome", "latestOutcomeAt", "latestOutcomeCode", "baselineState", "baselineTransitionSeq",
+  "baselineAt", "deliveryState", "lastAttemptAt", "terminalAt", "deliveryCode", "lastProviderRunAt",
+  "createdAt", "updatedAt"
+].sort();
+
+function itemFromEnvelope(envelope: Envelope): Record<string, unknown> {
+  const item = (envelope.data as { item?: unknown } | undefined)?.item;
+  assert(item !== null && typeof item === "object" && !Array.isArray(item), "WatchItem DTO is missing");
+  return item as Record<string, unknown>;
+}
+
+function ruleFromEnvelope(envelope: Envelope): Record<string, unknown> {
+  const value = itemFromEnvelope(envelope).alertRule;
+  assert(value !== null && typeof value === "object" && !Array.isArray(value), "AlertRule DTO is missing");
+  const rule = value as Record<string, unknown>;
+  assert(JSON.stringify(Object.keys(rule).sort()) === JSON.stringify(PUBLIC_ALERT_RULE_KEYS), "AlertRule public DTO keys changed");
+  return rule;
+}
+
+async function alertPurePhase(): Promise<void> {
+  await runCase("alerts:pure-preflight-and-mock-zero-call", async () => {
+    const preflight = await import("../lib/alerts/alert-preflight");
+    assert(preflight.parseAlertArguments(["--send-telegram"]) === 5, "alert default limit is not five");
+    assert(preflight.parseAlertArguments(["--send-telegram", "--limit", "10"]) === 10, "alert hard limit is not ten");
+    let rejected = false;
+    try {
+      preflight.preflightAlertBootstrap(["--send-telegram"], {
+        NODE_ENV: "test",
+        TRIPWATCH_USE_MOCK_HELPERS: "true",
+        TELEGRAM_BOT_TOKEN: SENTINEL,
+        TELEGRAM_CHAT_ID: "1"
+      }, { platform: "linux", getuid: () => 1, readProc: () => "microsoft" });
+    } catch (error) {
+      rejected = (error as { code?: string }).code === "MOCK_HELPERS_FORBIDDEN";
+    }
+    assert(rejected, "mock preflight was not rejected before credentials or provider work");
+  });
+  await runCase("alerts:pure-telegram-invalid-message-zero-call", async () => {
+    const { sendTelegramMessage } = await import("../lib/alerts/telegram");
+    let calls = 0;
+    const result = await sendTelegramMessage(
+      { botToken: SENTINEL, chatId: "1" },
+      "x".repeat(3_001),
+      async () => {
+        calls += 1;
+        throw new Error("transport must not be called");
+      }
+    );
+    assert(result.outcome === "ambiguous" && calls === 0, "invalid Telegram payload reached transport");
+  });
+  await runCase("alerts:pure-worker-source-cap-and-fairness", async () => {
+    const worker = await readFile(join(ROOT, "lib", "services", "alert-worker-service.ts"), "utf8");
+    assert(worker.includes("const limit = input.limit ?? 5") && worker.includes("limit > 10"), "worker limit bounds changed");
+    assert(worker.includes('orderBy: [{ lastProviderRunAt: "asc" }, { createdAt: "asc" }, { id: "asc" }]'), "worker fair ordering changed");
+    assert(!/setInterval|setTimeout|cron|scheduler|polling|\bretry\s*\(/.test(worker), "worker contains lifecycle behavior");
+  });
+  await runCase("alerts:pure-fake-dispatch-cap-and-fairness", async () => {
+    const { runAlertWorker } = await import("../lib/services/alert-worker-service");
+    const dispatched: string[] = [];
+    const now = new Date("2026-07-18T00:00:00.000Z");
+    const makeRule = (index: number) => {
+      const id = `rule-${String(index).padStart(2, "0")}`;
+      const result = {
+        id: `result-${id}`, type: "flight", status: "success", source: "flight-ticket-search", checkedAt: now, createdAt: now,
+        resultJson: JSON.stringify({ query: { from: "ICN", to: "NRT", date: "2026-08-01" }, priceSummary: { currency: "KRW" }, flights: [] }),
+        officialUrl: "https://google.com/travel/flights"
+      };
+      return {
+        id, watchItemId: `watch-${id}`, configVersion: 1, updatedAt: now, lastProviderRunAt: null, enabled: true, outboundOptIn: true, channel: "telegram",
+        deliveryState: "never", baselineState: "never", baselineFingerprint: null, baselineTransitionSeq: 0, conditionJson: JSON.stringify({ kind: "displayed_price_at_or_below", maxDisplayedPriceKrw: 1 }),
+        watchItem: { enabled: true, type: "flight", paramsJson: JSON.stringify({ from: "ICN", to: "NRT", date: "2026-08-01" }), results: [result] }
+      };
+    };
+    const rules = Array.from({ length: 11 }, (_, index) => makeRule(index));
+    const fakeDb = {
+      alertRule: {
+        findMany: async (input: { where: { deliveryState?: unknown } }) => input.where.deliveryState ? [] : rules,
+        findUnique: async ({ where }: { where: { id: string } }) => rules.find((rule) => rule.id === where.id) ?? null,
+        updateMany: async () => ({ count: 1 })
+      }
+    };
+    let telegramCalls = 0;
+    const result = await runAlertWorker({
+      db: fakeDb as never,
+      limit: 10,
+      credentials: { botToken: SENTINEL, chatId: "1" },
+      runWatchItem: async (id) => {
+        dispatched.push(id);
+        const rule = rules.find((candidate) => candidate.watchItemId === id);
+        return { providerDispatched: true, alertMode: "flight_search", storedResult: rule?.watchItem.results[0] } as never;
+      },
+      sendTelegram: async () => {
+        telegramCalls += 1;
+        return { outcome: "sent", code: "TELEGRAM_SENT" };
+      },
+      now: () => now
+    });
+    assert(result.providerDispatches === 10 && dispatched.length === 10, "worker did not enforce the actual dispatch cap");
+    assert(JSON.stringify(dispatched) === JSON.stringify(rules.slice(0, 10).map((rule) => rule.watchItemId)), "worker did not preserve fair candidate order");
+    assert(telegramCalls === 0, "no-match fake dispatch reached Telegram");
+  });
+}
+
+async function alertPrismaPhase(): Promise<void> {
+  if (process.env.TRIPWATCH_SMOKE_ALLOW_DB_MUTATION !== "true") {
+    record("alerts:temp-db-opt-in", "BLOCKED", "TRIPWATCH_SMOKE_ALLOW_DB_MUTATION must be exactly true");
+    return;
+  }
+  let managed: ManagedServer | undefined;
+  try {
+    managed = await startManagedServer(true);
+    const baseUrl = managed.baseUrl;
+    let ruleId = "";
+    await runCase("alerts:ticket-schedule-unsupported", async () => {
+      const watchItemId = await createWatch(baseUrl, "ticket", "alert_ticket", { input: "yes24:1", mode: "schedule" });
+      await assertResponse(await request(baseUrl, "/api/alert-rules", json({ watchItemId, condition: { kind: "seats_at_or_above", minSeats: 1 } })), 422, "ALERT_SUBTYPE_UNSUPPORTED");
+    });
+    await runCase("alerts:strict-create-patch-public-dto", async () => {
+      const watchItemId = await createWatch(baseUrl, "flight", "alert_flight", { from: "ICN", to: "NRT", date: futureDate(30), adults: 1, seat: "economy", mode: "oneway", limit: 1 });
+      const missingHeader = await request(baseUrl, "/api/alert-rules", { method: "POST", headers: { origin: "http://127.0.0.1:3000", "sec-fetch-site": "same-origin" }, body: JSON.stringify({ watchItemId, condition: { kind: "displayed_price_at_or_below", maxDisplayedPriceKrw: 100000 } }) });
+      assert(missingHeader.status >= 400, "AlertRule create accepted a missing JSON content-type");
+      const created = await assertResponse(await request(baseUrl, "/api/alert-rules", json({ watchItemId, condition: { kind: "displayed_price_at_or_below", maxDisplayedPriceKrw: 100000 } })), 201);
+      const createdItem = itemFromEnvelope(created);
+      const createdRule = ruleFromEnvelope(created);
+      ruleId = String(createdRule.id);
+      assert(createdRule.channel === "telegram" && createdRule.enabled === false && createdRule.outboundOptIn === false, "AlertRule secure defaults changed");
+      assert(!("version" in (createdRule.condition as Record<string, unknown>)), "AlertRule condition leaked a version field");
+      const mixedWatchPatch = await request(baseUrl, `/api/watchlist/${watchItemId}`, patch({ title: "must-not-persist", unexpected: true }));
+      assert(mixedWatchPatch.status === 400, "WatchItem PATCH accepted a mixed unknown key");
+      const afterMixedPatch = await assertResponse(await request(baseUrl, "/api/watchlist"), 200);
+      const afterMixedItem = ((afterMixedPatch.data as { items?: Array<Record<string, unknown>> }).items ?? []).find((item) => item.id === watchItemId);
+      assert(JSON.stringify(afterMixedItem) === JSON.stringify(createdItem), "mixed WatchItem PATCH did not roll back");
+      const invalidPatch = await request(baseUrl, `/api/alert-rules/${ruleId}`, patch({ configVersion: createdRule.configVersion, unexpected: true }));
+      assert(invalidPatch.status === 400, "AlertRule PATCH accepted an unknown key");
+      const updated = await assertResponse(await request(baseUrl, `/api/alert-rules/${ruleId}`, patch({ configVersion: createdRule.configVersion, enabled: true, outboundOptIn: true, channel: "telegram" })), 200);
+      const updatedRule = ruleFromEnvelope(updated);
+      assert(updatedRule.enabled === true && updatedRule.outboundOptIn === true && updatedRule.configVersion === Number(createdRule.configVersion) + 1, "AlertRule enable/opt-in update failed");
+      const disabled = await assertResponse(await request(baseUrl, `/api/alert-rules/${ruleId}`, patch({ configVersion: updatedRule.configVersion, enabled: false, outboundOptIn: false, channel: "telegram" })), 200);
+      const disabledItem = itemFromEnvelope(disabled);
+      assert(ruleFromEnvelope(disabled).enabled === false, "AlertRule disable failed");
+      const watchlist = await assertResponse(await request(baseUrl, "/api/watchlist"), 200);
+      const authoritativeItem = ((watchlist.data as { items?: Array<Record<string, unknown>> }).items ?? []).find((item) => item.id === watchItemId);
+      assert(JSON.stringify(authoritativeItem) === JSON.stringify(disabledItem), "GET and PATCH WatchItem envelopes diverged");
+    });
+    await runCase("alerts:draft-delete-no-provider-or-telegram", async () => {
+      assert(ruleId.length > 0, "AlertRule was not created");
+      const deleted = await assertResponse(await request(baseUrl, `/api/alert-rules/${ruleId}`, { method: "DELETE", headers: { origin: "http://127.0.0.1:3000", "sec-fetch-site": "same-origin" } }), 200);
+      assert(itemFromEnvelope(deleted).alertRule === null, "AlertRule delete did not return an authoritative parent");
+      const listed = await assertResponse(await request(baseUrl, "/api/alert-rules"), 200);
+      const rules = ((listed.data as { items?: unknown[] } | undefined)?.items ?? []) as Array<Record<string, unknown>>;
+      assert(!rules.some((rule) => rule.id === ruleId), "draft AlertRule delete failed");
+    });
+  } catch (error) {
+    record("alerts:temp-db-phase", "BLOCKED", boundedReason(error));
+  } finally {
+    await cleanup(managed);
+    record("alerts:temp-db-cleanup", "PASS", "isolated AlertRule SQLite files and OS-temp directory were removed");
+  }
+}
+
 async function defaultPhase(baseUrl: string): Promise<void> {
   responseBodies = [];
   for (const path of ["/dashboard", "/flights", "/buses", "/tickets", "/watchlist"]) {
@@ -271,19 +438,6 @@ function isSafeTempDirectory(directory: string): boolean {
   return insideTemp && !devPaths.includes(candidate) && !devPaths.some((path) => candidate === path || candidate.startsWith(`${path}${sep}`));
 }
 
-async function freePort(): Promise<number> {
-  const net = await import("node:net");
-  return new Promise((resolvePort, reject) => {
-    const server = net.createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") return reject(new Error("could not allocate localhost port"));
-      const port = address.port;
-      server.close((error) => error ? reject(error) : resolvePort(port));
-    });
-  });
-}
 
 function migrate(databaseUrl: string): void {
   const prismaCli = join(ROOT, "node_modules", "prisma", "build", "index.js");
@@ -301,15 +455,24 @@ async function startManagedServer(mockHelpers: boolean): Promise<ManagedServer> 
   let managed: ManagedServer | undefined;
   try {
     migrate(databaseUrl);
-    const port = await freePort();
+    const port = 3000;
     const nextCli = join(ROOT, "node_modules", "next", "dist", "bin", "next");
+    const serverEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      DATABASE_URL: databaseUrl,
+      TRIPWATCH_USE_MOCK_HELPERS: mockHelpers ? "true" : "false",
+      TRIPWATCH_SMOKE_SECRET_SENTINEL: SENTINEL,
+      NODE_ENV: "production"
+    };
+    delete serverEnv.TELEGRAM_BOT_TOKEN;
+    delete serverEnv.TELEGRAM_CHAT_ID;
     console.log(`managed server mode: ${mockHelpers ? "mock" : "real"}; DATABASE_URL is isolated`);
-    const child = spawn(process.execPath, [nextCli, "start", "-p", String(port)], {
+    const child = spawn(process.execPath, [nextCli, "start", "-H", "127.0.0.1", "-p", String(port)], {
       cwd: ROOT,
-      env: { ...process.env, DATABASE_URL: databaseUrl, TRIPWATCH_USE_MOCK_HELPERS: mockHelpers ? "true" : "false", TRIPWATCH_SMOKE_SECRET_SENTINEL: SENTINEL, NODE_ENV: "production" },
-      shell: false, windowsHide: true, stdio: ["ignore", "ignore", "pipe"]
+      env: serverEnv,
+      shell: false, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] as const
     });
-    child.stderr?.on("data", () => undefined);
+    child.stderr.on("data", () => undefined);
     managed = { baseUrl: `http://127.0.0.1:${port}`, tempDir, databaseUrl, child };
     for (let attempt = 0; attempt < 30; attempt += 1) {
       await new Promise<void>((done) => setTimeout(done, 250));
@@ -352,6 +515,7 @@ async function cleanup(managed: ManagedServer | undefined): Promise<void> {
     const db = new prismaModule.PrismaClient({ adapter: new adapter.PrismaBetterSqlite3({ url: managed.databaseUrl }) });
     try {
       await db.queryResult.deleteMany();
+      await (db as unknown as { alertRule: { deleteMany: () => Promise<unknown> } }).alertRule.deleteMany();
       await db.watchItem.deleteMany();
     } finally {
       await db.$disconnect();
@@ -575,9 +739,15 @@ async function main(): Promise<void> {
   const realHelpersEnabled = process.env.TRIPWATCH_SMOKE_REAL_HELPERS === "true";
   const foresttripReadOnly = process.argv.includes("--foresttrip-read-only");
   const foresttripTempDb = process.argv.includes("--foresttrip-temp-db");
+  const alertsPure = process.argv.includes("--alerts-pure");
+  const alertsPrisma = process.argv.includes("--alerts-prisma");
 
-  assert(!(foresttripReadOnly && foresttripTempDb), "Foresttrip selectors cannot be combined");
-  if (foresttripReadOnly) {
+  assert([foresttripReadOnly, foresttripTempDb, alertsPure, alertsPrisma].filter(Boolean).length <= 1, "smoke selectors cannot be combined");
+  if (alertsPure) {
+    await alertPurePhase();
+  } else if (alertsPrisma) {
+    await alertPrismaPhase();
+  } else if (foresttripReadOnly) {
     await foresttripReadOnlyPhase();
   } else if (foresttripTempDb) {
     if (!mutationEnabled) {

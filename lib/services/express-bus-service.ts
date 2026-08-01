@@ -18,13 +18,15 @@ const SEARCH_TIMEOUT_MS = 20_000;
 const STDOUT_LIMIT_BYTES = 1024 * 1024;
 const STDERR_LIMIT_BYTES = 64 * 1024;
 
+export const EXPRESS_BUS_LIVE_SOURCE = "express-bus-booking";
+
 const EXPRESS_HELPER = {
-  id: "express-bus-booking",
+  id: EXPRESS_BUS_LIVE_SOURCE,
   command: "python3",
   scriptPath: join(process.env.HOME ?? "/home/donghwi", ".agents", "skills", "express-bus-booking", "scripts", "kobus_express_booking.py")
 } as const;
 
-type ExpressBusResponseSource = "express-bus-booking" | "mock-express-bus-helper" | "kobus-link";
+type ExpressBusResponseSource = typeof EXPRESS_BUS_LIVE_SOURCE | "mock-express-bus-helper" | "kobus-link";
 
 type Terminal = {
   code: string;
@@ -107,7 +109,7 @@ function responseFromNormalized(normalized: NormalizedBusResult, source: Express
 function failedExpressBusResponse(
   error: unknown,
   officialUrl: string,
-  source: ExpressBusResponseSource = "express-bus-booking"
+  source: ExpressBusResponseSource = EXPRESS_BUS_LIVE_SOURCE
 ): TripWatchApiResponse<BusSearchData> {
   const apiError = toApiError(error);
   const publicError =
@@ -217,7 +219,7 @@ export async function searchExpressBuses(input: BusSearchInput): Promise<TripWat
 
   try {
     const payload = await runExpressHelper<unknown>(argsForSearch(input, depart, arrive));
-    const response = responseFromNormalized(normalizeExpressBusPayload(payload, input, officialUrl), "express-bus-booking");
+    const response = responseFromNormalized(normalizeExpressBusPayload(payload, input, officialUrl), EXPRESS_BUS_LIVE_SOURCE);
 
     if (response.data?.schedules.length === 0) {
       return noResultsResponse(input, officialUrl);

@@ -6,11 +6,17 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "start:local": "next start -H 127.0.0.1 -p 3000",
+    "alerts:once": "tsx scripts/run-alerts.ts",
     "lint": "eslint app components lib --ext .ts,.tsx --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "prisma:format": "prisma format",
     "prisma:migrate": "prisma migrate dev",
     "smoke": "tsx scripts/smoke-test.ts",
+    "verify:loopback": "tsx scripts/verify-loopback.ts",
+    "test:alerts:pure": "tsx --test --experimental-test-module-mocks tests/alerts/alert-condition-schema.test.ts tests/alerts/canonicalize.test.ts tests/alerts/conditions.test.ts tests/alerts/local-operator.test.ts tests/alerts/policy.test.ts tests/alerts/preflight-lock.test.ts tests/alerts/provider-env-isolation.test.ts tests/alerts/telegram.test.ts tests/alerts/watchlist-client-state.test.ts tests/alerts/watchlist-run-metadata.test.ts tests/alerts/watchlist-serialization.test.ts tests/alerts/watchlist-ui-contract.test.ts",
+    "test:alerts:prisma": "prisma validate && prisma generate && tsx --test tests/alerts/api.integration.test.ts tests/alerts/alert-rule-service.integration.test.ts tests/alerts/alert-worker-service.integration.test.ts tests/alerts/migration.integration.test.ts",
+    "test:alerts": "npm run test:alerts:pure && npm run test:alerts:prisma",
     "security:scan": "tsx scripts/security-scan.ts"
   },
   "dependencies": {

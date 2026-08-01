@@ -18,13 +18,15 @@ const SEARCH_TIMEOUT_MS = 20_000;
 const STDOUT_LIMIT_BYTES = 1024 * 1024;
 const STDERR_LIMIT_BYTES = 64 * 1024;
 
+export const INTERCITY_BUS_LIVE_SOURCE = "intercity-bus-booking";
+
 const INTERCITY_HELPER = {
-  id: "intercity-bus-booking",
+  id: INTERCITY_BUS_LIVE_SOURCE,
   command: "python3",
   scriptPath: join(process.env.HOME ?? "/home/donghwi", ".agents", "skills", "intercity-bus-booking", "scripts", "intercity_bus_search.py")
 } as const;
 
-type IntercityBusResponseSource = "intercity-bus-booking" | "mock-intercity-bus-helper" | "tmoney-link";
+type IntercityBusResponseSource = typeof INTERCITY_BUS_LIVE_SOURCE | "mock-intercity-bus-helper" | "tmoney-link";
 
 type Terminal = {
   code: string;
@@ -115,7 +117,7 @@ function responseFromNormalized(normalized: NormalizedBusResult, source: Interci
 function failedIntercityBusResponse(
   error: unknown,
   officialUrl: string,
-  source: IntercityBusResponseSource = "intercity-bus-booking"
+  source: IntercityBusResponseSource = INTERCITY_BUS_LIVE_SOURCE
 ): TripWatchApiResponse<BusSearchData> {
   const apiError = toApiError(error);
   const publicError =
@@ -224,7 +226,7 @@ export async function searchIntercityBuses(input: BusSearchInput): Promise<TripW
 
   try {
     const payload = await runIntercityHelper<unknown>(argsForSearch(input, depart, arrive));
-    const response = responseFromNormalized(normalizeIntercityBusPayload(payload, input, officialUrl), "intercity-bus-booking");
+    const response = responseFromNormalized(normalizeIntercityBusPayload(payload, input, officialUrl), INTERCITY_BUS_LIVE_SOURCE);
 
     if (response.data?.schedules.length === 0) {
       return noResultsResponse(input, officialUrl);

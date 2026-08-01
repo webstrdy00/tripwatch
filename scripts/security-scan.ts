@@ -250,6 +250,48 @@ function scanForesttripContract(): Finding[] {
   return findings;
 }
 
+function scanAlertContract(): Finding[] {
+  const files = {
+    preflight: resolve(ROOT, "lib/alerts/alert-preflight.ts"),
+    types: resolve(ROOT, "lib/alerts/types.ts"),
+    telegram: resolve(ROOT, "lib/alerts/telegram.ts"),
+    worker: resolve(ROOT, "lib/services/alert-worker-service.ts"),
+    runner: resolve(ROOT, "scripts/run-alerts.ts"),
+    packageJson: resolve(ROOT, "package.json"),
+    envExample: resolve(ROOT, ".env.example"),
+    schema: resolve(ROOT, "prisma/schema.prisma"),
+    watchlist: resolve(ROOT, "lib/watchlist.ts")
+  };
+  const findings: Finding[] = [];
+  const content = Object.fromEntries(Object.entries(files).map(([name, path]) => [name, readFileSync(path, "utf8")])) as Record<string, string>;
+  const checks: Array<[keyof typeof files, RegExp, string, string]> = [
+    ["types", /ALERT_SOURCES = \[\s*"flight-ticket-search",\s*"express-bus-booking",\s*"intercity-bus-booking",\s*"ticket-availability",\s*"foresttrip-vacancy"\s*\]/s, "ALERT_EXACT_LIVE_SOURCES", "Alert eligibility is limited to exact official live provider source constants."],
+    ["preflight", /preflightAlertBootstrap[\s\S]*?parseAlertArguments[\s\S]*?assertWslEvidence[\s\S]*?TRIPWATCH_USE_MOCK_HELPERS === "true"[\s\S]*?readTelegramCredentials[\s\S]*?removeTelegramCredentialsFromAmbientEnv/s, "ALERT_PREFLIGHT_ORDER", "Preflight parses arguments, verifies WSL, blocks mocks, snapshots credentials, and strips ambient credential names."],
+    ["preflight", /delete env\[name\][\s\S]*?TELEGRAM_ENV_NOT_REMOVED/, "ALERT_ENV_STRIPPING", "Telegram credential names are deleted and their absence is verified before worker import."],
+    ["runner", /preflightAlertBootstrap\(process\.argv\.slice\(2\)\)[\s\S]*?await import\("\.\.\/lib\/services\/alert-worker-service"\)/s, "ALERT_STATIC_IMPORT_PREFLIGHT_GRAPH", "The runner reaches the worker only through a post-preflight dynamic import."],
+    ["runner", /^(?![\s\S]*(?:spawn\s*\(|exec(?:File|Sync)?\s*\(|process\.env\.(?:TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID)))[\s\S]*$/, "ALERT_RUNNER_NO_DIRECT_SPAWN_OR_CREDENTIAL_READ", "The runner neither spawns processes nor reads credentials outside preflight."],
+    ["telegram", /https:\/\/api\.telegram\.org\/bot\$\{botToken\}\/sendMessage/, "ALERT_FIXED_TELEGRAM_TRANSPORT", "Telegram delivery has one fixed Bot API sendMessage endpoint."],
+    ["telegram", /^(?![\s\S]*(?:console\.|process\.env|\bretry\s*\(|setInterval|setImmediate))[\s\S]*$/, "ALERT_TELEGRAM_NO_LEAK_OR_RETRY", "Telegram transport has no console output, ambient environment read, repeated timer, or retry loop."],
+    ["preflight", /ALERT_DEFAULT_LIMIT = 5[\s\S]*?ALERT_MAX_LIMIT = 10/, "ALERT_WORKER_LIMITS", "Worker limits have a default of five and a hard maximum of ten."],
+    ["worker", /orderBy: \[\{ lastProviderRunAt: "asc" \}, \{ createdAt: "asc" \}, \{ id: "asc" \}\]/, "ALERT_FAIR_ORDERING", "Eligible rules are dispatched in stable fair order."],
+    ["worker", /^(?![\s\S]*(?:setInterval|setTimeout|cron|scheduler|polling|\bretry\s*\(|spawn\s*\(|exec(?:File|Sync)?\s*\())[\s\S]*$/, "ALERT_WORKER_ONE_SHOT", "Worker contains no scheduler, polling, retry, or direct process spawning."],
+    ["packageJson", /"alerts:once": "tsx scripts\/run-alerts\.ts"/, "ALERT_ONCE_SCRIPT", "The one-shot alert entrypoint is fixed."],
+    ["packageJson", /"start:local": "next start -H 127\.0\.0\.1 -p 3000"/, "ALERT_LOOPBACK_BINDING", "The local start script binds only loopback port 3000."],
+    ["packageJson", /"verify:loopback": "tsx scripts\/smoke-test\.ts --alerts-prisma"/, "ALERT_LOOPBACK_VERIFICATION", "Loopback verification uses the isolated alert smoke selector."],
+    ["envExample", /TELEGRAM_BOT_TOKEN=""[\s\S]*?TELEGRAM_CHAT_ID=""/, "ALERT_ENV_EXAMPLE_NAMES_ONLY", "The example exposes only empty Telegram credential variable names."],
+    ["schema", /model AlertRule \{[\s\S]*?watchItemId\s+String\s+@unique[\s\S]*?channel\s+String\s+@default\("telegram"\)[\s\S]*?outboundOptIn\s+Boolean\s+@default\(false\)/, "ALERT_SCHEMA_PROTECTED_INVARIANTS", "AlertRule remains one-per-watch, Telegram-only, and explicit-opt-in."],
+    ["schema", /^(?![\s\S]*(?:fingerprint|attemptId|attemptRunId|attemptFingerprint|attemptResultId|attemptResultType)\s+String\s+@(?:@unique|unique))[\s\S]*$/, "ALERT_PRIVATE_FINGERPRINT", "Private delivery and fingerprint state is not publicly unique or exposed through schema shortcuts."],
+    ["watchlist", /function serializeAlertRule[\s\S]*?return \{(?:(?!baselineFingerprint|attemptId|attemptRunId|attemptFingerprint|attemptTransitionSeq|attemptResultId|attemptResultType)[\s\S])*?\n  \};/, "ALERT_PUBLIC_SERIALIZER_NO_PRIVATE_STATE", "The public AlertRule serializer excludes private fingerprints and attempt state."],
+    ["packageJson", /"version": "0\.1\.0"[\s\S]*?"dependencies": \{[\s\S]*?"@prisma\/client": "\^7\.8\.0"/s, "ALERT_PACKAGE_PROTECTED_INVARIANTS", "Alert scripts do not change package version or dependencies."],
+  ];
+  for (const [key, pattern, rule, reason] of checks) {
+    const value = content[key];
+    const index = value.search(pattern);
+    addFinding(findings, files[key], value, Math.max(0, index), index >= 0 ? "ALLOWED" : "HIGH", rule, index >= 0 ? reason : "Alert safety contract is missing or changed.");
+  }
+  return findings;
+}
+
 function scanDocumentation(file: string): Finding[] {
   const content = readFileSync(file, "utf8");
   const findings: Finding[] = [];
@@ -270,7 +312,7 @@ function main(): void {
   const documentationFiles = [resolve(ROOT, "README.md"), ...collectFiles(resolve(ROOT, "docs"), (path) => path.endsWith(".md"))]
     .filter((path, index, paths) => statSync(path, { throwIfNoEntry: false })?.isFile() && paths.indexOf(path) === index)
     .sort();
-  const sourceFindings = [...sourceFiles.flatMap(scanSource), ...scanForesttripContract()].sort((left, right) =>
+  const sourceFindings = [...sourceFiles.flatMap(scanSource), ...scanForesttripContract(), ...scanAlertContract()].sort((left, right) =>
     left.file.localeCompare(right.file) || left.line - right.line || left.rule.localeCompare(right.rule)
   );
   const documentationFindings = documentationFiles.flatMap(scanDocumentation).sort((left, right) =>

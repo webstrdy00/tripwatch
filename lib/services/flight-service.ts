@@ -23,13 +23,15 @@ const COMPARE_MONTH_TIMEOUT_MS = 60_000;
 const STDOUT_LIMIT_BYTES = 1024 * 1024;
 const STDERR_LIMIT_BYTES = 64 * 1024;
 
+export const FLIGHT_LIVE_SOURCE = "flight-ticket-search";
+
 const FLIGHT_HELPER = {
-  id: "flight-ticket-search",
+  id: FLIGHT_LIVE_SOURCE,
   command: "python3",
   scriptPath: join(process.env.HOME ?? "/home/donghwi", ".agents", "skills", "flight-ticket-search", "scripts", "flight_ticket_search.py")
 } as const;
 
-export type FlightResponseSource = "flight-ticket-search" | "mock-flight-helper" | "google-flights-link";
+export type FlightResponseSource = typeof FLIGHT_LIVE_SOURCE | "mock-flight-helper" | "google-flights-link";
 
 function useMockHelpers(): boolean {
   return process.env.TRIPWATCH_USE_MOCK_HELPERS === "true";
@@ -121,7 +123,7 @@ function responseFromNormalized(
 function failedFlightResponse(
   error: unknown,
   officialUrl: string,
-  source: FlightResponseSource = "flight-ticket-search"
+  source: FlightResponseSource = FLIGHT_LIVE_SOURCE
 ): TripWatchApiResponse<FlightSearchData> {
   const apiError = toApiError(error);
   const publicError =
@@ -280,7 +282,7 @@ export async function searchFlights(input: FlightSearchInput): Promise<TripWatch
 
   try {
     const payload = await runFlightHelper<unknown>(argsForSearch(input), SEARCH_TIMEOUT_MS);
-    return responseFromNormalized(normalizeFlightSearchPayload(payload, input, officialUrl), "flight-ticket-search");
+    return responseFromNormalized(normalizeFlightSearchPayload(payload, input, officialUrl), FLIGHT_LIVE_SOURCE);
   } catch (error) {
     if (useMockHelpers() && error instanceof TripWatchError && error.code === "HELPER_FAILED") {
       return mockSearchResponse(input, officialUrl, "helper 실패 fallback");
@@ -302,7 +304,7 @@ export async function compareFlightMonth(input: FlightCompareMonthInput): Promis
 
   try {
     const payload = await runFlightHelper<unknown>(argsForCompareMonth(input), COMPARE_MONTH_TIMEOUT_MS);
-    return responseFromNormalized(normalizeFlightCompareMonthPayload(payload, input, officialUrl), "flight-ticket-search");
+    return responseFromNormalized(normalizeFlightCompareMonthPayload(payload, input, officialUrl), FLIGHT_LIVE_SOURCE);
   } catch (error) {
     if (useMockHelpers() && error instanceof TripWatchError && error.code === "HELPER_FAILED") {
       return mockCompareMonthResponse(input, officialUrl, "helper 실패 fallback");

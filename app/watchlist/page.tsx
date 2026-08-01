@@ -3,26 +3,10 @@ import { ErrorCard } from "@/components/ui/ErrorCard";
 import { SAFETY_NOTICE } from "@/lib/constants";
 import { db } from "@/lib/db";
 import { summarizeError } from "@/lib/errors";
-import { serializeWatchItems, type WatchItemListItem } from "@/lib/watchlist";
+import { serializeWatchItems, type WatchItemListItem, watchItemInclude } from "@/lib/watchlist";
 
 export const dynamic = "force-dynamic";
 
-const watchItemInclude = {
-  results: {
-    orderBy: [
-      {
-        checkedAt: "desc" as const
-      },
-      {
-        createdAt: "desc" as const
-      },
-      {
-        id: "desc" as const
-      }
-    ],
-    take: 1
-  }
-};
 
 async function getWatchItems(): Promise<{ items: WatchItemListItem[]; error?: string }> {
   try {

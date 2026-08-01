@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
 
 import { TripWatchError } from "@/lib/errors";
 import { maskSecrets } from "@/lib/secrets";
@@ -6,12 +6,26 @@ import { maskSecrets } from "@/lib/secrets";
 const DEFAULT_STDOUT_LIMIT_BYTES = 1024 * 1024;
 const DEFAULT_STDERR_LIMIT_BYTES = 64 * 1024;
 
+export type HelperSpawnedProcess = {
+  stdout: Pick<NodeJS.ReadableStream, "setEncoding" | "on">;
+  stderr: Pick<NodeJS.ReadableStream, "setEncoding" | "on">;
+  kill(signal?: NodeJS.Signals | number): boolean;
+  on(event: "error", listener: (error: Error) => void): unknown;
+  on(event: "close", listener: (code: number | null) => void): unknown;
+};
+
+export type HelperSpawnImplementation = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptionsWithoutStdio
+) => HelperSpawnedProcess;
 export type HelperCommandOptions = {
   timeoutMs: number;
   stdoutLimitBytes?: number;
   stderrLimitBytes?: number;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  spawnImplementation?: HelperSpawnImplementation;
 };
 
 export type HelperCommandResult<T> = {
@@ -62,7 +76,7 @@ export async function runHelperCommand<T = unknown>(
     throw new TripWatchError("VALIDATION_ERROR", "helper stderrLimitBytes는 양의 정수여야 합니다.");
   }
 
-  const childEnv = options.env ?? process.env;
+  const selectedEnv = options.env ?? process.env;
 
   return new Promise<HelperCommandResult<T>>((resolve, reject) => {
     let stdout = "";
@@ -70,8 +84,11 @@ export async function runHelperCommand<T = unknown>(
     let stdoutExceeded = false;
     let stderrExceeded = false;
     let settled = false;
+    const childEnv = { ...selectedEnv };
+    delete childEnv.TELEGRAM_BOT_TOKEN;
+    delete childEnv.TELEGRAM_CHAT_ID;
 
-    const child = spawn(command, [...args], {
+    const child = (options.spawnImplementation ?? spawn)(command, [...args], {
       cwd: options.cwd,
       env: childEnv,
       shell: false,

@@ -1,5 +1,25 @@
 import type { TripWatchStatus } from "@/lib/api-response";
+import type {
+  AlertBaselineState,
+  AlertChannel,
+  AlertCondition,
+  AlertDeliveryState,
+  AlertLatestOutcome,
+  PublicAlertRule
+} from "@/lib/alerts/types";
 import type { WatchItemType } from "@/lib/validation/common-schema";
+
+export const watchItemInclude = {
+  results: {
+    orderBy: [
+      { checkedAt: "desc" as const },
+      { createdAt: "desc" as const },
+      { id: "desc" as const }
+    ],
+    take: 1
+  },
+  alertRule: true
+};
 
 export type QueryResultListItem = {
   id: string;
@@ -23,6 +43,7 @@ export type WatchItemListItem = {
   createdAt: string;
   updatedAt: string;
   latestResult?: QueryResultListItem;
+  alertRule: PublicAlertRule | null;
 };
 
 type RawQueryResult = {
@@ -37,6 +58,36 @@ type RawQueryResult = {
   createdAt: Date;
 };
 
+type RawAlertRule = {
+  id: string;
+  watchItemId: string;
+  channel: string;
+  conditionJson: string;
+  enabled: boolean;
+  outboundOptIn: boolean;
+  configVersion: number;
+  latestOutcome: string;
+  latestOutcomeAt: Date | null;
+  latestOutcomeCode: string | null;
+  baselineState: string;
+  baselineFingerprint: string | null;
+  baselineTransitionSeq: number;
+  baselineAt: Date | null;
+  deliveryState: string;
+  attemptId: string | null;
+  attemptRunId: string | null;
+  attemptFingerprint: string | null;
+  attemptTransitionSeq: number | null;
+  attemptResultId: string | null;
+  attemptResultType: string | null;
+  lastAttemptAt: Date | null;
+  terminalAt: Date | null;
+  deliveryCode: string | null;
+  lastProviderRunAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 type RawWatchItem = {
   id: string;
   type: string;
@@ -47,6 +98,7 @@ type RawWatchItem = {
   createdAt: Date;
   updatedAt: Date;
   results?: RawQueryResult[];
+  alertRule?: RawAlertRule | null;
 };
 
 type ParamsRecord = Record<string, unknown>;
@@ -65,6 +117,151 @@ function asWatchItemType(value: string): WatchItemType {
 
 function toIsoDate(value: Date): string {
   return value.toISOString();
+}
+
+function toOptionalIsoDate(value: Date | null): string | null {
+  return value ? toIsoDate(value) : null;
+}
+
+function hasExactKeys(value: object, keys: readonly string[]): boolean {
+  const actualKeys = Object.keys(value);
+  return actualKeys.length === keys.length && actualKeys.every((key) => keys.includes(key));
+}
+
+function parsePublicAlertCondition(conditionJson: string): AlertCondition | undefined {
+  try {
+    const parsed: unknown = JSON.parse(conditionJson);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+
+    const condition = parsed as {
+      kind?: unknown;
+      maxDisplayedPriceKrw?: unknown;
+      minSeats?: unknown;
+    };
+
+    if (typeof condition.kind !== "string") {
+      return undefined;
+    }
+
+    if (
+      (condition.kind === "displayed_price_at_or_below" || condition.kind === "date_displayed_price_at_or_below") &&
+      hasExactKeys(condition, ["kind", "maxDisplayedPriceKrw"]) &&
+      typeof condition.maxDisplayedPriceKrw === "number" &&
+      Number.isSafeInteger(condition.maxDisplayedPriceKrw) &&
+      condition.maxDisplayedPriceKrw >= 1 &&
+      condition.maxDisplayedPriceKrw <= 100_000_000
+    ) {
+      return { kind: condition.kind, maxDisplayedPriceKrw: condition.maxDisplayedPriceKrw };
+    }
+
+    if (
+      condition.kind === "seats_at_or_above" &&
+      hasExactKeys(condition, ["kind", "minSeats"]) &&
+      typeof condition.minSeats === "number" &&
+      Number.isSafeInteger(condition.minSeats) &&
+      condition.minSeats >= 1 &&
+      condition.minSeats <= 99
+    ) {
+      return { kind: "seats_at_or_above", minSeats: condition.minSeats };
+    }
+
+    if (condition.kind === "availability" && hasExactKeys(condition, ["kind"])) {
+      return { kind: "availability" };
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
+function asAlertChannel(value: string): AlertChannel | undefined {
+  return value === "telegram" ? value : undefined;
+}
+
+function asAlertLatestOutcome(value: string): AlertLatestOutcome | undefined {
+  return value === "never" ||
+    value === "success_matched" ||
+    value === "success_no_match" ||
+    value === "partial" ||
+    value === "failed" ||
+    value === "blocked_source" ||
+    value === "unsupported_shape" ||
+    value === "result_type_mismatch" ||
+    value === "result_superseded" ||
+    value === "parent_disabled" ||
+    value === "failed_cooldown" ||
+    value === "config_invalid" ||
+    value === "message_invalid" ||
+    value === "config_changed"
+    ? value
+    : undefined;
+}
+
+function asAlertBaselineState(value: string): AlertBaselineState | undefined {
+  return value === "never" || value === "matched" || value === "no_match" ? value : undefined;
+}
+
+function asAlertDeliveryState(value: string): AlertDeliveryState | undefined {
+  return value === "never" ||
+    value === "reserved" ||
+    value === "sending" ||
+    value === "sent" ||
+    value === "rejected" ||
+    value === "ambiguous" ||
+    value === "suppressed" ||
+    value === "cancelled"
+    ? value
+    : undefined;
+}
+
+function serializeAlertRule(rule: RawAlertRule | null | undefined): PublicAlertRule | null {
+  if (!rule) {
+    return null;
+  }
+
+  const condition = parsePublicAlertCondition(rule.conditionJson);
+  const channel = asAlertChannel(rule.channel);
+  const latestOutcome = asAlertLatestOutcome(rule.latestOutcome);
+  const baselineState = asAlertBaselineState(rule.baselineState);
+  const deliveryState = asAlertDeliveryState(rule.deliveryState);
+
+  if (
+    !condition ||
+    !channel ||
+    !latestOutcome ||
+    !baselineState ||
+    !deliveryState ||
+    !Number.isSafeInteger(rule.configVersion) ||
+    !Number.isSafeInteger(rule.baselineTransitionSeq)
+  ) {
+    return null;
+  }
+
+  return {
+    id: rule.id,
+    watchItemId: rule.watchItemId,
+    channel,
+    condition,
+    enabled: rule.enabled,
+    outboundOptIn: rule.outboundOptIn,
+    configVersion: rule.configVersion,
+    latestOutcome,
+    latestOutcomeAt: toOptionalIsoDate(rule.latestOutcomeAt),
+    latestOutcomeCode: rule.latestOutcomeCode,
+    baselineState,
+    baselineTransitionSeq: rule.baselineTransitionSeq,
+    baselineAt: toOptionalIsoDate(rule.baselineAt),
+    deliveryState,
+    lastAttemptAt: toOptionalIsoDate(rule.lastAttemptAt),
+    terminalAt: toOptionalIsoDate(rule.terminalAt),
+    deliveryCode: rule.deliveryCode,
+    lastProviderRunAt: toOptionalIsoDate(rule.lastProviderRunAt),
+    createdAt: toIsoDate(rule.createdAt),
+    updatedAt: toIsoDate(rule.updatedAt)
+  };
 }
 
 export function serializeWatchItem(item: RawWatchItem): WatchItemListItem {
@@ -91,7 +288,8 @@ export function serializeWatchItem(item: RawWatchItem): WatchItemListItem {
           errorText: latestResult.errorText ?? undefined,
           createdAt: toIsoDate(latestResult.createdAt)
         }
-      : undefined
+      : undefined,
+    alertRule: serializeAlertRule(item.alertRule)
   };
 }
 

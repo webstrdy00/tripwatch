@@ -77,7 +77,7 @@ export const watchItemUpdateSchema = z.object({
   title: z.string().trim().min(1).max(120).optional(),
   memo: z.string().trim().max(1000).nullable().optional(),
   enabled: z.boolean().optional()
-}).refine((value) => Object.keys(value).length > 0, {
+}).strict().refine((value) => Object.keys(value).length > 0, {
   message: "수정할 값이 필요합니다."
 });
 
