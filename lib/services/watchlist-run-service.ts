@@ -2,8 +2,9 @@ import type { QueryResult, WatchItem } from "@prisma/client";
 import type { AlertMode } from "@/lib/alerts/types";
 
 import { failedResponse, type TripWatchApiResponse } from "@/lib/api-response";
+import { apiErrorStatus } from "@/lib/api-error-status";
 import { db } from "@/lib/db";
-import { summarizeError, type TripWatchErrorCode } from "@/lib/errors";
+import { summarizeError } from "@/lib/errors";
 import {
   buildExpressBusOfficialUrl,
   buildIntercityBusOfficialUrl,
@@ -35,6 +36,9 @@ export type WatchItemRunResult = {
   alertMode?: AlertMode;
   providerDispatched: boolean;
   storedResult?: StoredWatchItemRunResult;
+};
+export type WatchItemRunOptions = {
+  onProviderDispatchStarted?: () => void;
 };
 
 function parseParamsJson(paramsJson: string): unknown {
@@ -327,7 +331,10 @@ async function dispatchWatchItem(
   });
 }
 
-export async function runWatchItem(item: RunnableWatchItem): Promise<WatchItemRunResult> {
+export async function runWatchItem(
+  item: RunnableWatchItem,
+  options: WatchItemRunOptions = {}
+): Promise<WatchItemRunResult> {
   const alertMode = alertModeForItem(item);
 
   if (!item.enabled) {
@@ -357,6 +364,7 @@ export async function runWatchItem(item: RunnableWatchItem): Promise<WatchItemRu
   try {
     response = await dispatchWatchItem(item, () => {
       providerDispatched = true;
+      options.onProviderDispatchStarted?.();
     });
   } catch (error) {
     const message = summarizeError(error);
@@ -383,7 +391,10 @@ export async function runWatchItem(item: RunnableWatchItem): Promise<WatchItemRu
   };
 }
 
-export async function runWatchItemById(id: string): Promise<WatchItemRunResult> {
+export async function runWatchItemById(
+  id: string,
+  options: WatchItemRunOptions = {}
+): Promise<WatchItemRunResult> {
   const item = await db.watchItem.findUnique({
     where: {
       id
@@ -441,49 +452,11 @@ export async function runWatchItemById(id: string): Promise<WatchItemRunResult> 
     };
   }
 
-  return runWatchItem(item);
+  return runWatchItem(item, options);
 }
 
 export function httpStatusForRunResponse(response: TripWatchApiResponse<unknown>): number {
-  if (response.status !== "failed") {
-    return 200;
-  }
-
-  const errorCode = response.error?.code as TripWatchErrorCode | undefined;
-
-  if (errorCode === "VALIDATION_ERROR") {
-    return 400;
-  }
-
-  if (errorCode === "WATCH_ITEM_NOT_FOUND") {
-    return 404;
-  }
-
-  if (errorCode === "DISABLED_WATCH_ITEM") {
-    return 409;
-  }
-
-  if (errorCode === "FAILED_RERUN_COOLDOWN") {
-    return 429;
-  }
-
-  if (errorCode === "NOT_IMPLEMENTED") {
-    return 501;
-  }
-
-  if (errorCode === "TERMINAL_NOT_FOUND" || errorCode === "NO_RESULTS" || errorCode === "NO_SCHEDULE") {
-    return 404;
-  }
-
-  if (errorCode === "HELPER_TIMEOUT") {
-    return 504;
-  }
-
-  if (errorCode === "HELPER_FAILED" || errorCode === "PARSE_ERROR") {
-    return 502;
-  }
-
-  return 500;
+  return response.status === "failed" ? apiErrorStatus(response.error) : 200;
 }
 
 export function isWatchItemType(value: string): value is WatchItemType {

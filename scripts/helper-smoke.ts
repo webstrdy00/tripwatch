@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { basename, join, posix } from "node:path";
 import { tmpdir } from "node:os";
@@ -530,31 +530,24 @@ function foresttripExecution(smokeCase: SmokeCase, wslHome?: string): Pick<Smoke
 
 async function resolveWslPath(windowsPath: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    let stdout = "";
-    let stderr = "";
-    const child = spawn("wsl.exe", ["--exec", "/usr/bin/wslpath", "-a", windowsPath], {
-      shell: false,
-      stdio: "pipe",
-      windowsHide: true
-    });
-
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on("error", reject);
-    child.on("close", (exitCode) => {
-      const wslPath = stdout.trim();
-      if (exitCode !== 0 || !wslPath.startsWith("/")) {
-        reject(new Error(`wslpath failed (${exitCode}): ${maskSecrets(stderr.trim())}`));
-        return;
+    execFile(
+      "wsl.exe",
+      ["--exec", "/usr/bin/wslpath", "-a", windowsPath],
+      {
+        encoding: "utf8",
+        maxBuffer: STDOUT_LIMIT_BYTES,
+        timeout: 10_000,
+        windowsHide: true
+      },
+      (error, stdout, stderr) => {
+        const wslPath = stdout.trim();
+        if (error || !wslPath.startsWith("/")) {
+          reject(new Error(`wslpath failed: ${maskSecrets(stderr.trim()).slice(0, STDERR_LIMIT_BYTES)}`));
+          return;
+        }
+        resolve(wslPath);
       }
-      resolve(wslPath);
-    });
+    );
   });
 }
 

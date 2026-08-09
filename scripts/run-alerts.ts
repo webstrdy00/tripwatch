@@ -2,36 +2,10 @@ import { preflightAlertBootstrap, AlertPreflightError } from "../lib/alerts/aler
 import { acquireAlertWorkerLock, AlertWorkerLockError } from "../lib/alerts/worker-lock";
 import { formatAlertDiagnosticEvent } from "../lib/alerts/redaction";
 import { ALERT_EXIT_CODE, type AlertExitCode } from "../lib/alerts/exit-codes";
-
-interface ClosedWorkerSummary {
-  readonly scanned?: number;
-  readonly providerDispatched?: number;
-  readonly evaluated?: number;
-  readonly sent?: number;
-  readonly rejected?: number;
-  readonly ambiguous?: number;
-  readonly cancelled?: number;
-  readonly blocked?: number;
-  readonly code?: string;
-}
-
+import { formatAlertWorkerSummary } from "../lib/alerts/worker-summary";
 
 function isExitCode(value: number): value is AlertExitCode {
   return value === 0 || value === 4 || value === 5 || value === 6 || value === 7;
-}
-
-function boundedSummary(summary: ClosedWorkerSummary): string {
-  const fields: Record<string, string | number | boolean | null> = {};
-  for (const key of ["scanned", "providerDispatched", "evaluated", "sent", "rejected", "ambiguous", "cancelled", "blocked"] as const) {
-    const value = summary[key];
-    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 10_000) {
-      fields[key] = value;
-    }
-  }
-  if (typeof summary.code === "string" && /^[\x21-\x7E]{1,64}$/.test(summary.code)) {
-    fields.code = summary.code;
-  }
-  return formatAlertDiagnosticEvent(fields);
 }
 
 async function main(): Promise<void> {
@@ -63,13 +37,18 @@ async function main(): Promise<void> {
       return;
     }
     process.exitCode = result.exitCode;
-    console.log(boundedSummary({
+    console.log(formatAlertWorkerSummary({
+      exitCode: result.exitCode,
       providerDispatched: result.providerDispatches,
+      providerCooldownSkipped: result.providerCooldownSkipped,
       evaluated: result.evaluated,
       sent: result.sent,
       rejected: result.rejected,
       ambiguous: result.ambiguous,
       cancelled: result.cancelled,
+      suppressed: result.suppressed,
+      recoveredReserved: result.recoveredReserved,
+      recoveredSending: result.recoveredSending,
       blocked: result.skipped
     }));
   } catch (error) {

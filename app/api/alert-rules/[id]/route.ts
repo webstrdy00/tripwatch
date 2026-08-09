@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { parseJsonBodyWithSchema, successResponse } from "@/lib/api-response";
+import { assertNoRequestBody, parseJsonBodyWithSchema, successResponse } from "@/lib/api-response";
 import { buildApiRouteError } from "@/lib/api-route-error";
 import { TripWatchError } from "@/lib/errors";
 import { assertLocalOperatorRequest } from "@/lib/security/local-operator";
@@ -12,6 +12,7 @@ import {
   updateAlertRule
 } from "@/lib/services/alert-rule-service";
 import { serializeWatchItem } from "@/lib/watchlist";
+import { parseDatabaseId } from "@/lib/validation/common-schema";
 
 const SOURCE = "tripwatch:alert-rules";
 
@@ -66,17 +67,12 @@ function jsonError(error: unknown) {
 
   return NextResponse.json(routeError.body, { status: routeError.status });
 }
-function assertEmptyDeleteRequest(request: Request): void {
-  if (request.body !== null) {
-    throw new TripWatchError("ALERT_VALIDATION_ERROR", "알림 규칙 삭제 요청에는 본문을 포함할 수 없습니다.");
-  }
-}
 
 
 export async function PATCH(request: Request, context: RouteContext) {
   try {
     assertLocalOperatorRequest(request);
-    const { id } = await context.params;
+    const id = parseDatabaseId((await context.params).id);
     const input = await parseJsonBodyWithSchema(request, alertRuleUpdateSchema);
     const rule = input.enabled === false
       ? await disableAlertRule(id, input.configVersion)
@@ -98,8 +94,8 @@ export async function PATCH(request: Request, context: RouteContext) {
 export async function DELETE(request: Request, context: RouteContext) {
   try {
     assertLocalOperatorRequest(request);
-    assertEmptyDeleteRequest(request);
-    const { id } = await context.params;
+    await assertNoRequestBody(request);
+    const id = parseDatabaseId((await context.params).id);
     const item = serializeWatchItem(await deleteAlertRuleDraft(id));
 
     return NextResponse.json(

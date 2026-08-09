@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { busTimeSchema, isoDateSchema } from "@/lib/validation/common-schema";
+import { busTimeSchema, databaseIdSchema, isoDateSchema } from "@/lib/validation/common-schema";
 
 const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -47,12 +47,12 @@ export const expressBusSearchSchema = busSearchSchema;
 export const intercityBusSearchSchema = busSearchSchema;
 
 export const expressBusSearchRequestSchema = busSearchSchema.extend({
-  watchItemId: z.preprocess(normalizeOptionalString, z.string().min(1).optional())
-});
+  watchItemId: z.preprocess(normalizeOptionalString, databaseIdSchema.optional())
+}).strict();
 
 export const intercityBusSearchRequestSchema = busSearchSchema.extend({
-  watchItemId: z.preprocess(normalizeOptionalString, z.string().min(1).optional())
-});
+  watchItemId: z.preprocess(normalizeOptionalString, databaseIdSchema.optional())
+}).strict();
 
 export type BusSearchInput = z.infer<typeof busSearchSchema>;
 export type BusSearchRequestInput = z.infer<typeof expressBusSearchRequestSchema>;

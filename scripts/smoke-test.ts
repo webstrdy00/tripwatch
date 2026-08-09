@@ -1,8 +1,9 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, relative, resolve, sep } from "node:path";
+import { request as httpRequest } from "node:http";
+import { createConnection, createServer } from "node:net";
+import { readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { getKstCalendarDate, isoDateToCompact } from "../lib/dates";
 import { runHelperCommand } from "../lib/shell";
 import { serializeWatchItem, summarizeWatchItemParams } from "../lib/watchlist";
@@ -10,7 +11,8 @@ import { normalizeForesttripPayload } from "../lib/normalize/normalize-foresttri
 import { getOfficialUrl, getSafeOfficialUrl } from "../lib/official-urls";
 import { searchForesttrip } from "../lib/services/foresttrip-service";
 import { foresttripHelperPayloadSchema, foresttripSearchSchema } from "../lib/validation/foresttrip-schema";
-
+import { verifyLoopback } from "./verify-loopback";
+import { resolveShellFreeCommand, withOwnedTempDb, type OwnedTempDb } from "./with-owned-temp-db";
 type Status = "PASS" | "FAIL" | "NOT_RUN" | "BLOCKED";
 type Envelope = {
   status?: string;
@@ -22,15 +24,55 @@ type Envelope = {
   error?: { code?: string; message?: string };
 };
 type SmokeResult = { name: string; status: Status; reason: string };
-type ManagedServer = { baseUrl: string; tempDir: string; databaseUrl: string; child: ChildProcess };
+type ManagedServer = { baseUrl: string; port: number; databaseUrl: string; child: ChildProcess; childClosed: Promise<void> };
 
 const ROOT = resolve(process.cwd());
 const PREFIX = `SMOKE_TEST_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 const SENTINEL = `${PREFIX}_SECRET_${Math.random().toString(36).slice(2)}`;
 const REQUEST_TIMEOUT_MS = 10_000;
+const MANAGED_CLEANUP_FINAL_DEADLINE_MS = 10_000;
+const MANAGED_TERM_GRACE_MS = 5_000;
+const ALERTS_PRISMA_REQUIRED_RESULT_NAMES = [
+  "security:managed-loopback-dual-authority",
+  "alerts:ticket-schedule-unsupported",
+  "alerts:strict-create-patch-public-dto",
+  "alerts:draft-delete-no-provider-or-telegram",
+  "alerts:temp-db-cleanup"
+] as const;
+const FORESTTRIP_TEMP_DB_REQUIRED_RESULT_NAMES = [
+  "security:managed-loopback-dual-authority",
+  "ui:/dashboard",
+  "ui:/flights",
+  "ui:/buses",
+  "ui:/tickets",
+  "ui:/watchlist",
+  "api:dashboard-summary-envelope",
+  "api:missing-watch-run",
+  "security:response-secret-sentinel",
+  "validation:flight-invalid-json",
+  "validation:flight-invalid-iata",
+  "validation:ticket-malformed-url",
+  "validation:ticket-lookalike-url",
+  "validation:ticket-http-url",
+  "validation:ticket-credential-url",
+  "foresttrip:temp-db-page-and-post-contract",
+  "mock:flight-search",
+  "mock:flight-compare-month",
+  "mock:express-bus",
+  "mock:intercity-bus",
+  "mock:ticket-schedule",
+  "mock:ticket-seats",
+  "mock:foresttrip-search",
+  "watchlist:create-list-patch-enable-disable-delete",
+  "watchlist:single-run-and-rerun-status",
+  "watchlist:batch-cap-ticket-filter-failed-only",
+  "database:query-result-and-dashboard",
+  "foresttrip:temp-db-cleanup"
+] as const;
 const results: SmokeResult[] = [];
 let responseBodies: string[] = [];
 class BlockedError extends Error {}
+class ManagedServerStartError extends Error {}
 
 function boundedReason(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
@@ -53,6 +95,24 @@ async function runCase(name: string, action: () => Promise<void>): Promise<void>
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
+}
+function assertRequiredResultSet(requiredNames: readonly string[]): void {
+  const required = new Set(requiredNames);
+  assert(required.size === requiredNames.length, "required smoke result names must be unique");
+  const seen = new Map<string, SmokeResult[]>();
+  for (const result of results) {
+    const entries = seen.get(result.name) ?? [];
+    entries.push(result);
+    seen.set(result.name, entries);
+  }
+  const missing = requiredNames.filter((name) => !seen.has(name));
+  const duplicate = [...seen.entries()].filter(([name, entries]) => required.has(name) && entries.length !== 1).map(([name]) => name);
+  const unexpected = [...seen.keys()].filter((name) => !required.has(name));
+  const nonPassing = requiredNames.filter((name) => seen.get(name)?.[0]?.status !== "PASS");
+  assert(missing.length === 0, `required smoke results missing: ${missing.join(",")}`);
+  assert(duplicate.length === 0, `required smoke results duplicated: ${duplicate.join(",")}`);
+  assert(unexpected.length === 0, `unexpected smoke results: ${unexpected.join(",")}`);
+  assert(nonPassing.length === 0, `required smoke results did not pass: ${nonPassing.join(",")}`);
 }
 
 function asEnvelope(value: unknown): Envelope {
@@ -79,7 +139,7 @@ async function request(baseUrl: string, path: string, init: RequestInit = {}, ti
   try {
     const headers = new Headers(init.headers);
     if (["POST", "PUT", "PATCH", "DELETE"].includes(init.method ?? "GET")) {
-      if (!headers.has("origin")) headers.set("origin", "http://127.0.0.1:3000");
+      if (!headers.has("origin")) headers.set("origin", new URL(baseUrl).origin);
       if (!headers.has("sec-fetch-site")) headers.set("sec-fetch-site", "same-origin");
     }
     const response = await fetch(`${baseUrl}${path}`, { ...init, headers, signal: controller.signal, redirect: "error" });
@@ -94,11 +154,11 @@ async function request(baseUrl: string, path: string, init: RequestInit = {}, ti
 }
 
 function json(body: unknown): RequestInit {
-  return { method: "POST", headers: { "content-type": "application/json", origin: "http://127.0.0.1:3000", "sec-fetch-site": "same-origin" }, body: JSON.stringify(body) };
+  return { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) };
 }
 
 function patch(body: unknown): RequestInit {
-  return { method: "PATCH", headers: { "content-type": "application/json", origin: "http://127.0.0.1:3000", "sec-fetch-site": "same-origin" }, body: JSON.stringify(body) };
+  return { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) };
 }
 
 function futureDate(days: number): string {
@@ -291,7 +351,13 @@ async function alertPurePhase(): Promise<void> {
   await runCase("alerts:pure-worker-source-cap-and-fairness", async () => {
     const worker = await readFile(join(ROOT, "lib", "services", "alert-worker-service.ts"), "utf8");
     assert(worker.includes("const limit = input.limit ?? 5") && worker.includes("limit > 10"), "worker limit bounds changed");
-    assert(worker.includes('orderBy: [{ lastProviderRunAt: "asc" }, { createdAt: "asc" }, { id: "asc" }]'), "worker fair ordering changed");
+    assert(
+      worker.includes("function compareFairCandidates") &&
+        worker.includes("candidates.sort(compareFairCandidates)") &&
+        worker.includes("lastProviderRunAt") &&
+        worker.includes("createdAt"),
+      "worker fair ordering changed"
+    );
     assert(!/setInterval|setTimeout|cron|scheduler|polling|\bretry\s*\(/.test(worker), "worker contains lifecycle behavior");
   });
   await runCase("alerts:pure-fake-dispatch-cap-and-fairness", async () => {
@@ -342,23 +408,18 @@ async function alertPurePhase(): Promise<void> {
 }
 
 async function alertPrismaPhase(): Promise<void> {
-  if (process.env.TRIPWATCH_SMOKE_ALLOW_DB_MUTATION !== "true") {
-    record("alerts:temp-db-opt-in", "BLOCKED", "TRIPWATCH_SMOKE_ALLOW_DB_MUTATION must be exactly true");
-    return;
-  }
-  let managed: ManagedServer | undefined;
   try {
-    managed = await startManagedServer(true);
-    const baseUrl = managed.baseUrl;
-    let ruleId = "";
+    await withManagedServer(true, "start", async (managed) => {
+      const baseUrl = managed.baseUrl;
+      let ruleId = "";
     await runCase("alerts:ticket-schedule-unsupported", async () => {
       const watchItemId = await createWatch(baseUrl, "ticket", "alert_ticket", { input: "yes24:1", mode: "schedule" });
       await assertResponse(await request(baseUrl, "/api/alert-rules", json({ watchItemId, condition: { kind: "seats_at_or_above", minSeats: 1 } })), 422, "ALERT_SUBTYPE_UNSUPPORTED");
     });
     await runCase("alerts:strict-create-patch-public-dto", async () => {
       const watchItemId = await createWatch(baseUrl, "flight", "alert_flight", { from: "ICN", to: "NRT", date: futureDate(30), adults: 1, seat: "economy", mode: "oneway", limit: 1 });
-      const missingHeader = await request(baseUrl, "/api/alert-rules", { method: "POST", headers: { origin: "http://127.0.0.1:3000", "sec-fetch-site": "same-origin" }, body: JSON.stringify({ watchItemId, condition: { kind: "displayed_price_at_or_below", maxDisplayedPriceKrw: 100000 } }) });
-      assert(missingHeader.status >= 400, "AlertRule create accepted a missing JSON content-type");
+      const missingHeader = await request(baseUrl, "/api/alert-rules", { method: "POST", body: JSON.stringify({ watchItemId, condition: { kind: "displayed_price_at_or_below", maxDisplayedPriceKrw: 100000 } }) });
+      await assertResponse(missingHeader, 400, "ALERT_VALIDATION_ERROR");
       const created = await assertResponse(await request(baseUrl, "/api/alert-rules", json({ watchItemId, condition: { kind: "displayed_price_at_or_below", maxDisplayedPriceKrw: 100000 } })), 201);
       const createdItem = itemFromEnvelope(created);
       const createdRule = ruleFromEnvelope(created);
@@ -384,17 +445,16 @@ async function alertPrismaPhase(): Promise<void> {
     });
     await runCase("alerts:draft-delete-no-provider-or-telegram", async () => {
       assert(ruleId.length > 0, "AlertRule was not created");
-      const deleted = await assertResponse(await request(baseUrl, `/api/alert-rules/${ruleId}`, { method: "DELETE", headers: { origin: "http://127.0.0.1:3000", "sec-fetch-site": "same-origin" } }), 200);
+      const deleted = await assertResponse(await request(baseUrl, `/api/alert-rules/${ruleId}`, { method: "DELETE" }), 200);
       assert(itemFromEnvelope(deleted).alertRule === null, "AlertRule delete did not return an authoritative parent");
       const listed = await assertResponse(await request(baseUrl, "/api/alert-rules"), 200);
       const rules = ((listed.data as { items?: unknown[] } | undefined)?.items ?? []) as Array<Record<string, unknown>>;
       assert(!rules.some((rule) => rule.id === ruleId), "draft AlertRule delete failed");
     });
+    }); // withManagedServer
+    record("alerts:temp-db-cleanup", "PASS", "owned SQLite temp directory was removed");
   } catch (error) {
     record("alerts:temp-db-phase", "BLOCKED", boundedReason(error));
-  } finally {
-    await cleanup(managed);
-    record("alerts:temp-db-cleanup", "PASS", "isolated AlertRule SQLite files and OS-temp directory were removed");
   }
 }
 
@@ -430,99 +490,303 @@ function notRunMutationCases(reason: string): void {
   ]) record(name, "NOT_RUN", reason);
 }
 
-function isSafeTempDirectory(directory: string): boolean {
-  const temp = resolve(tmpdir());
-  const candidate = resolve(directory);
-  const insideTemp = relative(temp, candidate) !== "" && !relative(temp, candidate).startsWith(`..${sep}`) && !relative(temp, candidate).startsWith("..");
-  const devPaths = [resolve(ROOT, "dev.db"), resolve(ROOT, "prisma", "dev.db")];
-  return insideTemp && !devPaths.includes(candidate) && !devPaths.some((path) => candidate === path || candidate.startsWith(`${path}${sep}`));
-}
-
-
-function migrate(databaseUrl: string): void {
-  const prismaCli = join(ROOT, "node_modules", "prisma", "build", "index.js");
-  const outcome = spawnSync(process.execPath, [prismaCli, "migrate", "deploy"], {
-    cwd: ROOT, env: { ...process.env, DATABASE_URL: databaseUrl }, shell: false, encoding: "utf8", timeout: 60_000, windowsHide: true
+async function ownedPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolvePort, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolvePort());
   });
-  if (outcome.error || outcome.status !== 0) throw new Error("isolated database migration failed");
+  try {
+    const address = server.address();
+    assert(address !== null && typeof address !== "string" && address.address === "127.0.0.1", "failed to allocate a 127 loopback port");
+    return address.port;
+  } finally {
+    await new Promise<void>((done, reject) => server.close((error) => error ? reject(error) : done()));
+  }
 }
 
-async function startManagedServer(mockHelpers: boolean): Promise<ManagedServer> {
-  assert(existsSync(join(ROOT, ".next", "BUILD_ID")), "production build is required; managed server was not started");
-  const tempDir = await mkdtemp(join(tmpdir(), `${PREFIX}_`));
-  assert(isSafeTempDirectory(tempDir), "refusing a temporary database path outside the OS temp directory");
-  const databaseUrl = `file:${join(tempDir, "smoke.db").replaceAll("\\", "/")}`;
-  let managed: ManagedServer | undefined;
-  try {
-    migrate(databaseUrl);
-    const port = 3000;
-    const nextCli = join(ROOT, "node_modules", "next", "dist", "bin", "next");
-    const serverEnv: NodeJS.ProcessEnv = {
-      ...process.env,
-      DATABASE_URL: databaseUrl,
-      TRIPWATCH_USE_MOCK_HELPERS: mockHelpers ? "true" : "false",
-      TRIPWATCH_SMOKE_SECRET_SENTINEL: SENTINEL,
-      NODE_ENV: "production"
+type RawHttpResponse = { status: number; body: string };
+
+async function rawHttpRequest(
+  port: number,
+  authority: "127.0.0.1" | "localhost" | "example.invalid",
+  path: string,
+  init: { method?: string; origin?: string; fetchSite?: string; forwardedHost?: string; body?: string } = {}
+): Promise<RawHttpResponse> {
+  const body = init.body ?? "";
+  return new Promise<RawHttpResponse>((resolveResponse, rejectResponse) => {
+    const headers: Record<string, string | number> = {
+      host: `${authority}:${port}`,
+      "content-type": "application/json",
+      "content-length": Buffer.byteLength(body)
     };
-    delete serverEnv.TELEGRAM_BOT_TOKEN;
-    delete serverEnv.TELEGRAM_CHAT_ID;
-    console.log(`managed server mode: ${mockHelpers ? "mock" : "real"}; DATABASE_URL is isolated`);
-    const child = spawn(process.execPath, [nextCli, "start", "-H", "127.0.0.1", "-p", String(port)], {
-      cwd: ROOT,
-      env: serverEnv,
-      shell: false, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] as const
+    if (init.origin !== undefined) headers.origin = init.origin;
+    if (init.fetchSite !== undefined) headers["sec-fetch-site"] = init.fetchSite;
+    if (init.forwardedHost !== undefined) headers["x-forwarded-host"] = init.forwardedHost;
+
+    const outgoing = httpRequest(
+      {
+        host: "127.0.0.1",
+        port,
+        path,
+        method: init.method ?? "GET",
+        headers
+      },
+      (incoming) => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        incoming.on("data", (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > 65_536) {
+            incoming.destroy(new Error("raw authority response exceeded 65536 bytes"));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        incoming.once("error", rejectResponse);
+        incoming.once("end", () =>
+          resolveResponse({
+            status: incoming.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString("utf8")
+          })
+        );
+      }
+    );
+    outgoing.setTimeout(REQUEST_TIMEOUT_MS, () => outgoing.destroy(new Error("raw authority request timed out")));
+    outgoing.once("error", rejectResponse);
+    outgoing.end(body);
+  });
+}
+
+async function assertLocalAuthorities(port: number): Promise<void> {
+  const malformedBody = "{";
+  for (const authority of ["127.0.0.1", "localhost"] as const) {
+    const getResponse = await rawHttpRequest(port, authority, "/watchlist");
+    assert(getResponse.status === 200, `loopback GET authority failed for ${authority}`);
+
+    const origin = `http://${authority}:${port}`;
+    const mutationResponse = await rawHttpRequest(port, authority, "/api/watchlist", {
+      method: "POST",
+      origin,
+      fetchSite: "same-origin",
+      body: malformedBody
     });
-    child.stderr.on("data", () => undefined);
-    managed = { baseUrl: `http://127.0.0.1:${port}`, tempDir, databaseUrl, child };
+    assert(mutationResponse.status === 400, `loopback mutation authority failed for ${authority}`);
+  }
+
+  for (const [authority, origin] of [
+    ["127.0.0.1", `http://localhost:${port}`],
+    ["localhost", `http://127.0.0.1:${port}`]
+  ] as const) {
+    const response = await rawHttpRequest(port, authority, "/api/watchlist", {
+      method: "POST",
+      origin,
+      fetchSite: "same-origin",
+      body: malformedBody
+    });
+    assert(response.status === 403, `mixed authority was not rejected for ${authority}`);
+  }
+
+  const wrongFetchSite = await rawHttpRequest(port, "127.0.0.1", "/api/watchlist", {
+    method: "POST",
+    origin: `http://127.0.0.1:${port}`,
+    fetchSite: "cross-site",
+    body: malformedBody
+  });
+  assert(wrongFetchSite.status === 403, "wrong Sec-Fetch-Site was not rejected");
+
+  const forwardedSpoof = await rawHttpRequest(port, "example.invalid", "/api/watchlist", {
+    method: "POST",
+    origin: `http://example.invalid:${port}`,
+    fetchSite: "same-origin",
+    forwardedHost: `127.0.0.1:${port}`,
+    body: malformedBody
+  });
+  assert(forwardedSpoof.status === 403, "forwarded host rescued an invalid authority");
+}
+
+async function startManagedServer(mockHelpers: boolean, mode: "dev" | "start", owned: OwnedTempDb): Promise<ManagedServer> {
+  if (mode === "start") assert(existsSync(join(ROOT, ".next", "BUILD_ID")), "current production BUILD_ID is required");
+  const port = await ownedPort();
+  const serverEnv: NodeJS.ProcessEnv = {
+    ...owned.childEnv,
+    TRIPWATCH_USE_MOCK_HELPERS: mockHelpers ? "true" : "false",
+    TRIPWATCH_SMOKE_SECRET_SENTINEL: SENTINEL,
+    NODE_ENV: mode === "start" ? "production" : "development"
+  };
+  const invocation = resolveShellFreeCommand("npm", ["run", mode, "--", "--port", String(port)]);
+  const child = spawn(invocation.executable, invocation.args, {
+    cwd: ROOT,
+    env: serverEnv,
+    shell: false,
+    detached: process.platform !== "win32",
+    windowsHide: true,
+    stdio: ["ignore", "ignore", "pipe"] as const
+  });
+  child.stderr.resume();
+  const childClosed = new Promise<void>((resolveClose) => child.once("close", () => resolveClose()));
+  const managed = { baseUrl: `http://127.0.0.1:${port}`, port, databaseUrl: owned.databaseUrl, child, childClosed };
+  try {
     for (let attempt = 0; attempt < 30; attempt += 1) {
       await new Promise<void>((done) => setTimeout(done, 250));
       try {
         const response = await request(managed.baseUrl, "/dashboard");
-        if (response.status === 200) return managed;
+        if (response.status === 200) {
+          await verifyLoopback(port);
+          await assertLocalAuthorities(port);
+          const buildId = mode === "start" ? (await readFile(join(ROOT, ".next", "BUILD_ID"), "utf8")).trim() : "development";
+          record(
+            "security:managed-loopback-dual-authority",
+            "PASS",
+            `entrypoint=${mode} port=${port} loopbackVerified=true authority127Verified=true authorityLocalhostVerified=true buildId=${buildId}`
+          );
+          return managed;
+        }
       } catch { /* readiness is the sole bounded retry loop */ }
     }
-    throw new Error("managed production server did not become ready");
-  } catch (error) {
-    if (managed) await cleanup(managed);
-    else await rm(tempDir, { recursive: true, force: true });
-    throw error;
+    throw new Error(`managed ${mode} server did not become ready`);
+  } catch {
+    try {
+      await cleanup(managed);
+    } catch {
+      throw new Error("managed startup cleanup could not be proven");
+    }
+    throw new ManagedServerStartError("managed server failed after proven cleanup");
   }
+}
+
+async function forceKillWindowsTree(pid: number): Promise<void> {
+  await new Promise<void>((resolveKill, rejectKill) => {
+    const taskkill = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      cwd: ROOT,
+      env: process.env,
+      shell: false,
+      stdio: "ignore",
+      windowsHide: true
+    });
+    taskkill.once("error", rejectKill);
+    taskkill.once("close", (code) =>
+      code === 0 ? resolveKill() : rejectKill(new Error("managed process-tree cleanup failed"))
+    );
+  });
+}
+
+async function waitForTrackedChildClose(managed: ManagedServer, deadline: number): Promise<boolean> {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return false;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      managed.childClosed,
+      new Promise<never>((_, rejectTimeout) => {
+        timer = setTimeout(() => rejectTimeout(new Error("managed child close timed out")), remaining);
+      })
+    ]);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function posixGroupAbsent(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+    throw new Error("managed process-group cleanup could not be proven");
+  }
+}
+async function waitForPosixGroupAbsent(pid: number, deadline: number): Promise<boolean> {
+  while (Date.now() < deadline) {
+    if (posixGroupAbsent(pid)) return true;
+    await new Promise<void>((resolveWait) => setTimeout(resolveWait, 50));
+  }
+  return posixGroupAbsent(pid);
+}
+
+function signalPosixGroup(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+      throw new Error(`managed process-group ${signal} failed`);
+    }
+  }
+}
+
+async function assertListenerAbsent(port: number, deadline: number): Promise<void> {
+  const timeoutMs = Math.min(2_000, deadline - Date.now());
+  if (timeoutMs <= 0) throw new Error("managed listener cleanup deadline elapsed");
+  await new Promise<void>((resolveClosed, rejectOpen) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      rejectOpen(new Error("managed listener cleanup timed out"));
+    }, timeoutMs);
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      socket.destroy();
+      rejectOpen(new Error("managed listener remained after cleanup"));
+    });
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      if (error.code === "ECONNREFUSED") resolveClosed();
+      else rejectOpen(new Error(`managed listener cleanup was inconclusive: ${error.code ?? "UNKNOWN"}`));
+    });
+  });
 }
 
 async function cleanup(managed: ManagedServer | undefined): Promise<void> {
   if (!managed) return;
-  if (!isSafeTempDirectory(managed.tempDir)) throw new Error("refusing cleanup outside the verified OS temp directory");
-  if (!managed.child.killed && managed.child.exitCode === null) {
-    managed.child.kill();
-    await new Promise<void>((done) => {
-      let finished = false;
-      const finish = () => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timer);
-        done();
-      };
-      const timer = setTimeout(() => {
-        if (managed.child.exitCode === null) managed.child.kill("SIGKILL");
-        finish();
-      }, 5_000);
-      managed.child.once("exit", finish);
-    });
-  }
-  try {
-    const adapter = await import("@prisma/adapter-better-sqlite3");
-    const prismaModule = await import("@prisma/client");
-    const db = new prismaModule.PrismaClient({ adapter: new adapter.PrismaBetterSqlite3({ url: managed.databaseUrl }) });
-    try {
-      await db.queryResult.deleteMany();
-      await (db as unknown as { alertRule: { deleteMany: () => Promise<unknown> } }).alertRule.deleteMany();
-      await db.watchItem.deleteMany();
-    } finally {
-      await db.$disconnect();
+
+  const deadline = Date.now() + MANAGED_CLEANUP_FINAL_DEADLINE_MS;
+  const pid = managed.child.pid;
+  if (!pid) throw new Error("managed child PID is unavailable for cleanup");
+
+  if (process.platform === "win32") {
+    if (managed.child.exitCode === null) await forceKillWindowsTree(pid);
+    if (!await waitForTrackedChildClose(managed, deadline)) {
+      throw new Error("managed child did not close after taskkill");
     }
-  } finally {
-    await rm(managed.tempDir, { recursive: true, force: true });
+  } else {
+    if (managed.child.exitCode === null || !posixGroupAbsent(pid)) {
+      signalPosixGroup(pid, "SIGTERM");
+    }
+    const termDeadline = Math.min(deadline, Date.now() + MANAGED_TERM_GRACE_MS);
+    const closedAfterTerm = await waitForTrackedChildClose(managed, termDeadline);
+    if (!closedAfterTerm || !await waitForPosixGroupAbsent(pid, termDeadline)) {
+      signalPosixGroup(pid, "SIGKILL");
+    }
+    if (!await waitForTrackedChildClose(managed, deadline)) {
+      throw new Error("managed child did not close after process-group termination");
+    }
+    if (!await waitForPosixGroupAbsent(pid, deadline)) throw new Error("managed process group remained after cleanup");
   }
+
+  await assertListenerAbsent(managed.port, deadline);
+}
+
+async function withManagedServer<T>(mockHelpers: boolean, mode: "dev" | "start", action: (managed: ManagedServer) => Promise<T>): Promise<T> {
+  return withOwnedTempDb(async (owned) => {
+    const releaseCleanupLease = await owned.acquireCleanupLease();
+    let managed: ManagedServer;
+    try {
+      managed = await startManagedServer(mockHelpers, mode, owned);
+    } catch (error) {
+      if (error instanceof ManagedServerStartError) await releaseCleanupLease();
+      throw error;
+    }
+
+    try {
+      return await action(managed);
+    } finally {
+      await cleanup(managed);
+      await releaseCleanupLease();
+    }
+  });
 }
 
 async function createWatch(baseUrl: string, type: string, suffix: string, params: unknown, enabled = true): Promise<string> {
@@ -532,12 +796,11 @@ async function createWatch(baseUrl: string, type: string, suffix: string, params
   return item.id;
 }
 
-async function mutationPhase(): Promise<void> {
-  let managed: ManagedServer | undefined;
+async function mutationPhase(mode: "dev" | "start" = "start"): Promise<void> {
   try {
-    managed = await startManagedServer(true);
-    const baseUrl = managed.baseUrl;
-    await defaultPhase(baseUrl);
+    await withManagedServer(true, mode, async (managed) => {
+      const baseUrl = managed.baseUrl;
+      await defaultPhase(baseUrl);
     await runCase("validation:flight-invalid-json", async () => {
       const response = await request(baseUrl, "/api/flights/search", { method: "POST", headers: { "content-type": "application/json" }, body: "{" });
       const envelope = await assertResponse(response, 400, "VALIDATION_ERROR"); assert(envelope.status === "failed", "invalid JSON must fail");
@@ -674,11 +937,10 @@ async function mutationPhase(): Promise<void> {
         await db.$disconnect();
       }
     });
+    }); // withManagedServer
+    record("foresttrip:temp-db-cleanup", "PASS", "owned SQLite temp directory was removed");
   } catch (error) {
     record("managed-mock-phase", "BLOCKED", boundedReason(error));
-  } finally {
-    await cleanup(managed);
-    record("foresttrip:temp-db-cleanup", "PASS", "managed server, SQLite files, and OS-temp directory were removed");
   }
 }
 
@@ -702,9 +964,9 @@ function throwIfExternalBlock(envelope: Envelope): void {
 }
 
 async function realPhase(): Promise<void> {
-  let managed: ManagedServer | undefined;
   try {
-    managed = await startManagedServer(false); const baseUrl = managed.baseUrl; const date = futureDate(45);
+    await withManagedServer(false, "start", async (managed) => {
+      const baseUrl = managed.baseUrl; const date = futureDate(45);
     const cases: Array<[string, string, unknown]> = [
       ["real:flight", "/api/flights/search", { from: "ICN", to: "NRT", date, adults: 1, seat: "economy", mode: "oneway", limit: 1 }],
       ["real:express-bus", "/api/buses/express/search", { departName: "서울경부", arriveName: "부산", date, time: "09:00", passengers: 1 }],
@@ -729,8 +991,8 @@ async function realPhase(): Promise<void> {
       assert(seats.response.status === 200 && (seats.envelope.status === "success" || seats.envelope.status === "partial") && seats.envelope.data !== undefined, "ticket seats product contract mismatch");
       assertSafeOfficialUrl(seats.envelope.officialUrl);
     });
+    }); // withManagedServer
   } catch (error) { record("managed-real-phase", "BLOCKED", boundedReason(error)); }
-  finally { await cleanup(managed); }
 }
 
 async function main(): Promise<void> {
@@ -750,11 +1012,7 @@ async function main(): Promise<void> {
   } else if (foresttripReadOnly) {
     await foresttripReadOnlyPhase();
   } else if (foresttripTempDb) {
-    if (!mutationEnabled) {
-      record("foresttrip:temp-db-opt-in", "BLOCKED", "TRIPWATCH_SMOKE_ALLOW_DB_MUTATION must be exactly true");
-    } else {
-      await mutationPhase();
-    }
+    await mutationPhase("dev");
   } else {
     if (!mutationEnabled && !realHelpersEnabled) {
       await defaultPhase(baseUrl);
@@ -764,9 +1022,11 @@ async function main(): Promise<void> {
     if (realHelpersEnabled) await realPhase();
     else record("real:opt-in", "NOT_RUN", "TRIPWATCH_SMOKE_REAL_HELPERS is not exactly true");
   }
+  if (alertsPrisma) assertRequiredResultSet(ALERTS_PRISMA_REQUIRED_RESULT_NAMES);
+  if (foresttripTempDb) assertRequiredResultSet(FORESTTRIP_TEMP_DB_REQUIRED_RESULT_NAMES);
   const counts = results.reduce<Record<Status, number>>((total, result) => ({ ...total, [result.status]: total[result.status] + 1 }), { PASS: 0, FAIL: 0, NOT_RUN: 0, BLOCKED: 0 });
   console.log(`SUMMARY PASS=${counts.PASS} FAIL=${counts.FAIL} NOT_RUN=${counts.NOT_RUN} BLOCKED=${counts.BLOCKED}`);
-  process.exitCode = counts.FAIL > 0 ? 1 : 0;
+  process.exitCode = counts.FAIL > 0 || ((alertsPrisma || foresttripTempDb) && counts.BLOCKED > 0) ? 1 : 0;
 }
 
 void main().catch((error) => { record("runner", "FAIL", boundedReason(error)); console.log("SUMMARY PASS=0 FAIL=1 NOT_RUN=0 BLOCKED=0"); process.exitCode = 1; });

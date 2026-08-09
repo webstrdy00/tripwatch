@@ -4,7 +4,7 @@ import test from "node:test";
 import { aggregateAlertExitCodes, ALERT_EXIT_CODE, shouldStopAlertRun } from "../../lib/alerts/exit-codes";
 import { composeAlertMessage, sanitizeAlertDisplay } from "../../lib/alerts/message-composer";
 import { ALERT_DIAGNOSTIC_LIMITS, createAlertRedactor, REDACTION_SENTINEL } from "../../lib/alerts/redaction";
-import { ATTEMPT_INTERVAL_MS, classifyIncompleteAttempt, transitionSuccessfulBaseline } from "../../lib/alerts/state-machine";
+import { ATTEMPT_INTERVAL_MS, classifyIncompleteAttempt, isProviderDispatchDue, transitionSuccessfulBaseline } from "../../lib/alerts/state-machine";
 
 const now = new Date("2026-07-18T12:00:00.000Z");
 const emptyBaseline = { baselineState: "never" as const, baselineFingerprint: null, baselineTransitionSeq: 0, baselineAt: null, lastAttemptAt: null };
@@ -25,6 +25,22 @@ test("successful transitions separate latest outcome, baseline, and delivery act
   const reappeared = transitionSuccessfulBaseline({ ...noMatch, lastAttemptAt: now }, { matched: true, fingerprint: "v1:F" }, now);
   assert.equal(reappeared.deliveryAction, "suppressed");
   assert.equal(reappeared.baselineTransitionSeq, 3);
+});
+test("per-rule provider dispatch intervals are null-due, inclusive, and fail closed", () => {
+  const intervals = [
+    ["flight", 86_400_000],
+    ["express_bus", 3_600_000],
+    ["intercity_bus", 3_600_000],
+    ["ticket", 3_600_000],
+    ["foresttrip", 21_600_000]
+  ] as const;
+  for (const [type, interval] of intervals) {
+    assert.equal(isProviderDispatchDue(type, null, now), true);
+    assert.equal(isProviderDispatchDue(type, new Date(now.getTime() - interval + 1), now), false);
+    assert.equal(isProviderDispatchDue(type, new Date(now.getTime() - interval), now), true);
+  }
+  assert.equal(isProviderDispatchDue("unsupported", null, now), false);
+  assert.equal(isProviderDispatchDue("flight", new Date("invalid"), now), false);
 });
 
 test("attempt gate is inclusive and F/F1/F2 transitions are distinct", () => {

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { parseJsonBodyWithSchema, successResponse } from "@/lib/api-response";
+import { assertNoRequestBody, parseJsonBodyWithSchema, successResponse } from "@/lib/api-response";
 import { buildApiRouteError } from "@/lib/api-route-error";
 import { TripWatchError } from "@/lib/errors";
 import {
@@ -9,6 +9,7 @@ import {
 } from "@/lib/services/alert-rule-service";
 import { assertLocalOperatorRequest } from "@/lib/security/local-operator";
 import { serializeWatchItem } from "@/lib/watchlist";
+import { parseDatabaseId } from "@/lib/validation/common-schema";
 import { watchItemUpdateSchema } from "@/lib/validation/watchlist-schema";
 
 const SOURCE = "tripwatch:watchlist";
@@ -35,7 +36,7 @@ function jsonError(error: unknown) {
 export async function PATCH(request: Request, context: RouteContext) {
   try {
     assertLocalOperatorRequest(request);
-    const { id } = await context.params;
+    const id = parseDatabaseId((await context.params).id);
     const patch = await parseJsonBodyWithSchema(request, watchItemUpdateSchema);
     const item = await updateWatchItemWithAlertRuleLifecycle({ id, ...patch });
 
@@ -56,7 +57,8 @@ export async function PATCH(request: Request, context: RouteContext) {
 export async function DELETE(request: Request, context: RouteContext) {
   try {
     assertLocalOperatorRequest(request);
-    const { id } = await context.params;
+    await assertNoRequestBody(request);
+    const id = parseDatabaseId((await context.params).id);
     await deleteWatchItemWithAlertRuleLifecycle(id);
 
     return NextResponse.json(

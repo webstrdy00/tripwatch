@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
 
-import { failedResponse, successResponse } from "@/lib/api-response";
+import { successResponse } from "@/lib/api-response";
+import { buildApiRouteError } from "@/lib/api-route-error";
 import { getDashboardSummary } from "@/lib/dashboard";
-import { summarizeError } from "@/lib/errors";
+import { assertLocalOperatorRequest } from "@/lib/security/local-operator";
 
 const SOURCE = "tripwatch:dashboard-summary";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    assertLocalOperatorRequest(request);
     const summary = await getDashboardSummary();
 
     return NextResponse.json(
@@ -20,18 +22,7 @@ export async function GET() {
       })
     );
   } catch (error) {
-    const message = summarizeError(error);
-
-    return NextResponse.json(
-      failedResponse({
-        source: SOURCE,
-        summary: message,
-        error: {
-          code: "UNKNOWN_ERROR",
-          message
-        }
-      }),
-      { status: 500 }
-    );
+    const routeError = buildApiRouteError(error, SOURCE);
+    return NextResponse.json(routeError.body, { status: routeError.status });
   }
 }

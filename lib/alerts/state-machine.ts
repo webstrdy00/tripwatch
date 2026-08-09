@@ -1,4 +1,20 @@
 export const ATTEMPT_INTERVAL_MS = 21_600_000;
+export const PROVIDER_DISPATCH_INTERVAL_MS = {
+  flight: 86_400_000,
+  express_bus: 3_600_000,
+  intercity_bus: 3_600_000,
+  ticket: 3_600_000,
+  foresttrip: 21_600_000
+} as const;
+
+export function isProviderDispatchDue(type: string, lastProviderRunAt: Date | null, now: Date): boolean {
+  const interval = PROVIDER_DISPATCH_INTERVAL_MS[type as keyof typeof PROVIDER_DISPATCH_INTERVAL_MS];
+  if (interval === undefined) return false;
+  if (lastProviderRunAt === null) return true;
+  const last = lastProviderRunAt.getTime();
+  const current = now.getTime();
+  return Number.isFinite(last) && Number.isFinite(current) && current - last >= interval;
+}
 
 export type BaselineState = "never" | "matched" | "no_match";
 export type DeliveryState = "never" | "reserved" | "sending" | "sent" | "rejected" | "ambiguous" | "suppressed" | "cancelled";

@@ -152,3 +152,24 @@ test("missing and cooldown lookups do not report provider dispatch", async () =>
   assert.equal(cooldown.providerDispatched, false);
   assert.equal(cooldown.alertMode, "flight_search");
 });
+test("by-id observer records provider start before a persistence failure", async () => {
+  findUnique.mock.mockImplementationOnce(async () => ({
+    ...flightItem(),
+    results: []
+  }));
+  createQueryResultFromResponse.mock.mockImplementationOnce(async () => {
+    throw new Error("persistence failed");
+  });
+  let providerStarts = 0;
+
+  await assert.rejects(
+    watchlistRunService.runWatchItemById("watch-1", {
+      onProviderDispatchStarted: () => {
+        providerStarts += 1;
+      }
+    }),
+    /persistence failed/
+  );
+
+  assert.equal(providerStarts, 1);
+});

@@ -5,7 +5,12 @@ import { CanonicalizationError, canonicalizeAlertFingerprint, compareCanonicalTu
 
 type FingerprintInput = Parameters<typeof canonicalizeAlertFingerprint>[0];
 
-const GOLDENS = [
+const GOLDENS: Array<{
+  input: FingerprintInput;
+  json: string;
+  hex: string;
+  fingerprint: string;
+}> = [
   {
     input: { fingerprintVersion: "v1", type: "flight", mode: "flight_search", condition: { kind: "displayed_price_at_or_below", maxDisplayedPriceKrw: 123456 }, matches: [{ airlineName: "A \"line\"\\\ne\u0301", arrivalTime: "12:30", departureTime: "09:00", displayedPriceKrw: 12345, from: "가", to: "가나다" }] },
     json: "{\"condition\":{\"kind\":\"displayed_price_at_or_below\",\"maxDisplayedPriceKrw\":123456},\"fingerprintVersion\":\"v1\",\"matches\":[{\"airlineName\":\"A \\\"line\\\"\\\\\\né\",\"arrivalTime\":\"12:30\",\"departureTime\":\"09:00\",\"displayedPriceKrw\":12345,\"from\":\"가\",\"to\":\"가나다\"}],\"mode\":\"flight_search\",\"type\":\"flight\"}",
@@ -68,7 +73,7 @@ const GOLDENS = [
     ].join(""),
     fingerprint: "v1:d6bd77bf957b9ddc9e92aa33afbddfa8b161cb54299ea9ed4641f9f03633271c"
   }
-] as const;
+];
 
 const ticketInput = (): FingerprintInput => ({
   fingerprintVersion: "v1",
@@ -80,7 +85,7 @@ const ticketInput = (): FingerprintInput => ({
 
 test("canonical v1 has independent JSON, UTF-8 hex, and SHA-256 goldens for every mode", () => {
   for (const golden of GOLDENS) {
-    const result = canonicalizeAlertFingerprint(golden.input as FingerprintInput);
+    const result = canonicalizeAlertFingerprint(golden.input);
     assert.equal(result.canonicalJson, golden.json);
     assert.equal(Buffer.from(result.canonicalBytes).toString("hex"), golden.hex);
     assert.equal(result.fingerprint, golden.fingerprint);
@@ -129,7 +134,7 @@ test("canonicalization is independent of insertion order and locale APIs", () =>
 
 test("canonicalization preserves declared null optionals and fails closed on unsupported properties", () => {
   const nfd = ticketInput();
-  nfd.matches[0].grade = "e\u0301";
+  (nfd.matches[0] as { grade: string }).grade = "e\u0301";
   assert.equal((canonicalizeAlertFingerprint(nfd).matches[0] as { grade: string }).grade, "é");
 
   const invalidKey = ticketInput() as unknown as { matches: Array<Record<string, unknown>> };

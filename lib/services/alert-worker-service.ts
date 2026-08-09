@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { PrismaClient } from "@prisma/client";
+import type { AlertRule, PrismaClient, QueryResult, WatchItem } from "@prisma/client";
 
 import { canonicalizeAlertFingerprint } from "@/lib/alerts/canonicalize";
 import { evaluateBusCondition } from "@/lib/alerts/conditions/bus";
@@ -10,6 +10,7 @@ import { isEligibleAlert } from "@/lib/alerts/eligibility";
 import { composeAlertMessage } from "@/lib/alerts/message-composer";
 import {
   classifyIncompleteAttempt,
+  isProviderDispatchDue,
   recordLatestOutcome,
   transitionSuccessfulBaseline,
   type AlertBaseline,
@@ -25,21 +26,25 @@ import { parseAlertCondition } from "@/lib/validation/alert-rule-schema";
 
 type Client = Pick<PrismaClient, "alertRule" | "$transaction">;
 type Credentials = Readonly<{ botToken: string; chatId: string }>;
-type Dispatcher = (id: string) => Promise<WatchItemRunResult>;
+type DispatchSignal = Readonly<{ providerDispatchStarted: () => void }>;
+type Dispatcher = (id: string, signal: DispatchSignal) => Promise<WatchItemRunResult>;
 type Sender = (credentials: Credentials, message: string) => Promise<TelegramDeliveryResult>;
 
-export type AlertWorkerResult = { exitCode: 0 | 4 | 5 | 6 | 7; providerDispatches: number; evaluated: number; sent: number; rejected: number; ambiguous: number; cancelled: number; suppressed: number; recoveredReserved: number; recoveredSending: number; skipped: number };
+export type AlertWorkerResult = { exitCode: 0 | 4 | 5 | 6 | 7; providerDispatches: number; providerCooldownSkipped: number; evaluated: number; sent: number; rejected: number; ambiguous: number; cancelled: number; suppressed: number; recoveredReserved: number; recoveredSending: number; skipped: number };
 export type RunAlertWorkerInput = { limit?: number; credentials: Credentials; db?: Client; now?: () => Date; runWatchItem?: Dispatcher; sendTelegram?: Sender; runId?: string };
+type WorkerWatchItem = WatchItem & { results: QueryResult[] };
+type WorkerRule = AlertRule & { watchItem: WorkerWatchItem };
+
 type WorkerClient = {
   alertRule: {
-    findMany(args: unknown): Promise<any[]>;
-    findUnique(args: unknown): Promise<any | null>;
+    findMany(args: unknown): Promise<WorkerRule[]>;
+    findUnique(args: unknown): Promise<WorkerRule | null>;
     updateMany(args: unknown): Promise<{ count: number }>;
   };
   $transaction<T>(fn: (transaction: WorkerClient) => Promise<T>): Promise<T>;
 };
 
-function latestResult(watchItem: { results: any[] }): any | undefined {
+function latestResult(watchItem: { results: QueryResult[] }): QueryResult | undefined {
   return [...watchItem.results].sort((left, right) =>
     right.checkedAt.getTime() - left.checkedAt.getTime() ||
     right.createdAt.getTime() - left.createdAt.getTime() ||
@@ -47,17 +52,17 @@ function latestResult(watchItem: { results: any[] }): any | undefined {
   )[0];
 }
 
-function sameResult(left: any | undefined, right: any | undefined): boolean {
+function sameResult(left: QueryResult | undefined, right: QueryResult | undefined): boolean {
   return !left || !right ? left === right : left.id === right.id && left.type === right.type;
 }
 
-function sameParent(left: any, right: any): boolean {
+function sameParent(left: WorkerWatchItem, right: WorkerWatchItem): boolean {
   return left.id === right.id && left.enabled === right.enabled && left.type === right.type &&
     left.paramsJson === right.paramsJson && left.title === right.title &&
     left.updatedAt.getTime() === right.updatedAt.getTime();
 }
 
-function sameRuleConfig(left: any, right: any): boolean {
+function sameRuleConfig(left: WorkerRule, right: WorkerRule): boolean {
   return left.id === right.id && left.configVersion === right.configVersion &&
     left.updatedAt.getTime() === right.updatedAt.getTime() &&
     left.lastProviderRunAt?.getTime() === right.lastProviderRunAt?.getTime() &&
@@ -65,11 +70,11 @@ function sameRuleConfig(left: any, right: any): boolean {
     left.outboundOptIn === right.outboundOptIn && left.channel === right.channel &&
     left.deliveryState === right.deliveryState;
 }
-function sameFenceConfig(current: any, expected: any): boolean {
+function sameFenceConfig(current: AlertRule, expected: AlertRule): boolean {
   return current.configVersion === expected.configVersion && current.enabled === expected.enabled &&
     current.outboundOptIn === expected.outboundOptIn && current.channel === expected.channel;
 }
-function sameBaselineState(current: any, expected: any): boolean {
+function sameBaselineState(current: AlertRule, expected: AlertRule): boolean {
   return current.baselineState === expected.baselineState &&
     current.baselineFingerprint === expected.baselineFingerprint &&
     current.baselineTransitionSeq === expected.baselineTransitionSeq &&
@@ -80,7 +85,7 @@ function sameBaselineState(current: any, expected: any): boolean {
 }
 
 
-function ruleWithLatest(client: WorkerClient, id: string): Promise<any | null> {
+function ruleWithLatest(client: WorkerClient, id: string): Promise<WorkerRule | null> {
   return client.alertRule.findUnique({
     where: { id },
     include: { watchItem: { include: { results: { orderBy: [{ checkedAt: "desc" }, { createdAt: "desc" }, { id: "desc" }], take: 1 } } } }
@@ -156,11 +161,12 @@ function configuredMode(type: string, params: unknown): "flight_search" | "fligh
 export async function runAlertWorker(input: RunAlertWorkerInput): Promise<AlertWorkerResult> {
   const client = (input.db ?? db) as unknown as WorkerClient;
   const now = input.now ?? (() => new Date());
-  const dispatch = input.runWatchItem ?? runWatchItemById;
+  const dispatch = input.runWatchItem ?? ((id, signal) =>
+    runWatchItemById(id, { onProviderDispatchStarted: signal.providerDispatchStarted }));
   const telegram = input.sendTelegram ?? sendTelegramMessage;
   const limit = input.limit ?? 5;
   if (!Number.isInteger(limit) || limit < 1 || limit > 10) throw new RangeError("limit must be an integer from 1 to 10");
-  const counters: AlertWorkerResult = { exitCode: 0, providerDispatches: 0, evaluated: 0, sent: 0, rejected: 0, ambiguous: 0, cancelled: 0, suppressed: 0, recoveredReserved: 0, recoveredSending: 0, skipped: 0 };
+  const counters: AlertWorkerResult = { exitCode: 0, providerDispatches: 0, providerCooldownSkipped: 0, evaluated: 0, sent: 0, rejected: 0, ambiguous: 0, cancelled: 0, suppressed: 0, recoveredReserved: 0, recoveredSending: 0, skipped: 0 };
   const runId = input.runId ?? randomUUID();
 
   for (const rule of await client.alertRule.findMany({ where: { deliveryState: { in: ["reserved", "sending"] } } })) {
@@ -222,7 +228,10 @@ export async function runAlertWorker(input: RunAlertWorkerInput): Promise<AlertW
       if (!configured || configured === "schedule") throw new Error("unsupported");
       condition = parseAlertCondition(candidate.watchItem.type as never, configured, rawCondition);
     } catch {
-      await client.alertRule.updateMany({ where: { id: candidate.id, configVersion: candidate.configVersion }, data: recordLatestOutcome("config_invalid", now(), "ALERT_CONFIG_INVALID") });
+      await client.alertRule.updateMany({
+        where: { id: candidate.id, configVersion: candidate.configVersion },
+        data: recordLatestOutcome("config_invalid", now(), "ALERT_CONFIG_INVALID")
+      });
       counters.exitCode = 4;
       counters.skipped += 1;
       continue;
@@ -233,6 +242,9 @@ export async function runAlertWorker(input: RunAlertWorkerInput): Promise<AlertW
     const claim = await client.$transaction(async (transaction) => {
       const current = await ruleWithLatest(transaction, candidate.id);
       if (!current || !sameRuleConfig(current, candidate) || !sameParent(current.watchItem, candidate.watchItem)) return { kind: "stale" as const };
+      if (!isProviderDispatchDue(current.watchItem.type, current.lastProviderRunAt, claimAt)) {
+        return { kind: "cooldown" as const };
+      }
       const currentLatest = latestResult(current.watchItem);
       if (!sameResult(currentLatest, initial)) {
         const mismatch = currentLatest?.type !== candidate.watchItem.type;
@@ -255,6 +267,7 @@ export async function runAlertWorker(input: RunAlertWorkerInput): Promise<AlertW
       return update.count === 1 ? { kind: "claimed" as const, rule: current, priorCursor } : { kind: "stale" as const };
     });
     if (claim.kind !== "claimed") {
+      if (claim.kind === "cooldown") counters.providerCooldownSkipped = Math.min(10_000, counters.providerCooldownSkipped + 1);
       if (claim.kind === "result_changed") counters.exitCode = 4;
       counters.skipped += 1;
       continue;
@@ -262,16 +275,42 @@ export async function runAlertWorker(input: RunAlertWorkerInput): Promise<AlertW
     const claimedRule = claim.rule;
     const claimedLatest = latestResult(claimedRule.watchItem);
     if (!sameResult(claimedLatest, initial)) {
+      const restored = await client.alertRule.updateMany({
+        where: { id: claimedRule.id, configVersion: claimedRule.configVersion, lastProviderRunAt: claimAt },
+        data: { lastProviderRunAt: claim.priorCursor }
+      });
+      if (restored.count !== 1) {
+        counters.exitCode = 7;
+        break;
+      }
       counters.exitCode = 4;
       counters.skipped += 1;
       continue;
     }
 
     let run: WatchItemRunResult;
+    let providerDispatchStarted = false;
+    const dispatchSignal: DispatchSignal = {
+      providerDispatchStarted: () => {
+        providerDispatchStarted = true;
+      }
+    };
     try {
-      run = await dispatch(candidate.watchItemId);
+      run = await dispatch(candidate.watchItemId, dispatchSignal);
     } catch {
-      counters.providerDispatches += 1;
+      if (!providerDispatchStarted) {
+        const restored = await client.alertRule.updateMany({
+          where: { id: claimedRule.id, configVersion: claimedRule.configVersion, lastProviderRunAt: claimAt },
+          data: { lastProviderRunAt: claim.priorCursor }
+        });
+        if (restored.count !== 1) {
+          counters.exitCode = 7;
+          break;
+        }
+        counters.skipped += 1;
+      } else {
+        counters.providerDispatches += 1;
+      }
       await client.alertRule.updateMany({ where: { id: candidate.id, configVersion: candidate.configVersion }, data: recordLatestOutcome("failed", now(), "PROVIDER_DISPATCH_FAILED") });
       counters.exitCode = 4;
       continue;
@@ -427,7 +466,7 @@ export async function runAlertWorker(input: RunAlertWorkerInput): Promise<AlertW
     const attemptId = randomUUID();
     const reservation = await client.$transaction(async (transaction) => {
       const current = await ruleWithLatest(transaction, fresh.id);
-      const currentLatest = current && latestResult(current.watchItem);
+      const currentLatest = current ? latestResult(current.watchItem) : undefined;
       if (
         !current ||
         !sameRuleConfig(current, fresh) ||
@@ -472,7 +511,7 @@ export async function runAlertWorker(input: RunAlertWorkerInput): Promise<AlertW
     }
     const fence = await client.$transaction(async (transaction) => {
       const current = await ruleWithLatest(transaction, fresh.id);
-      const currentLatest = current && latestResult(current.watchItem);
+      const currentLatest = current ? latestResult(current.watchItem) : undefined;
       const ownsReservation = current && current.deliveryState === "reserved" && current.attemptId === attemptId &&
         current.attemptRunId === runId && current.attemptFingerprint === fingerprint &&
         current.attemptTransitionSeq === transition.baselineTransitionSeq && current.attemptResultId === latest.id &&

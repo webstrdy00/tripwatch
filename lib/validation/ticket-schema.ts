@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { ticketPlatformSchema, type TicketPlatform } from "@/lib/validation/common-schema";
+import { databaseIdSchema, ticketPlatformSchema, type TicketPlatform } from "@/lib/validation/common-schema";
 
 export type ParsedTicketInput = {
   platform: TicketPlatform;
@@ -10,14 +10,6 @@ export type ParsedTicketInput = {
 
 const ticketPlatformIdSchema = z.string().regex(/^(interpark|yes24):[A-Za-z0-9_-]+$/, "공연 ID는 interpark:id 또는 yes24:id 형식이어야 합니다.");
 
-function normalizeOptionalString(value: unknown): unknown {
-  if (typeof value !== "string") {
-    return value;
-  }
-
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
-}
 
 export function parseTicketInput(input: string): ParsedTicketInput | undefined {
   const trimmed = input.trim();
@@ -93,14 +85,14 @@ export const ticketLookupSchema = z.object({
 export const ticketScheduleRequestSchema = z.object({
   input: ticketInputSchema,
   mode: z.literal("schedule").default("schedule"),
-  watchItemId: z.preprocess(normalizeOptionalString, z.string().min(1).optional())
-});
+  watchItemId: databaseIdSchema.optional()
+}).strict();
 
 export const ticketSeatsRequestSchema = z.object({
   input: ticketInputSchema,
   mode: z.literal("seats").default("seats"),
-  watchItemId: z.preprocess(normalizeOptionalString, z.string().min(1).optional())
-});
+  watchItemId: databaseIdSchema.optional()
+}).strict();
 
 export type TicketLookupInput = z.infer<typeof ticketLookupSchema>;
 export type TicketScheduleRequestInput = z.infer<typeof ticketScheduleRequestSchema>;

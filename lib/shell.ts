@@ -5,8 +5,12 @@ import { maskSecrets } from "@/lib/secrets";
 
 const DEFAULT_STDOUT_LIMIT_BYTES = 1024 * 1024;
 const DEFAULT_STDERR_LIMIT_BYTES = 64 * 1024;
+const TERMINATION_GRACE_MS = 50;
+const TERMINATION_FINAL_DEADLINE_MS = 200;
+const TERMINATION_PROBE_MS = 10;
 
 export type HelperSpawnedProcess = {
+  pid?: number;
   stdout: Pick<NodeJS.ReadableStream, "setEncoding" | "on">;
   stderr: Pick<NodeJS.ReadableStream, "setEncoding" | "on">;
   kill(signal?: NodeJS.Signals | number): boolean;
@@ -45,16 +49,26 @@ function byteLength(value: string): number {
 }
 
 function appendWithLimit(current: string, chunk: string, limit: number): { value: string; exceeded: boolean } {
-  const next = current + chunk;
-
-  if (byteLength(next) <= limit) {
-    return { value: next, exceeded: false };
+  const remaining = limit - byteLength(current);
+  if (byteLength(chunk) <= remaining) {
+    return { value: current + chunk, exceeded: false };
   }
 
-  return {
-    value: Buffer.from(next, "utf8").subarray(0, limit).toString("utf8"),
-    exceeded: true
-  };
+  let suffix = Buffer.from(chunk, "utf8").subarray(0, Math.max(remaining, 0)).toString("utf8");
+  while (byteLength(suffix) > remaining) {
+    suffix = Array.from(suffix).slice(0, -1).join("");
+  }
+
+  return { value: current + suffix, exceeded: true };
+}
+
+function isProcessGroupGone(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
 }
 
 export async function runHelperCommand<T = unknown>(
@@ -81,47 +95,110 @@ export async function runHelperCommand<T = unknown>(
   return new Promise<HelperCommandResult<T>>((resolve, reject) => {
     let stdout = "";
     let stderr = "";
-    let stdoutExceeded = false;
     let stderrExceeded = false;
     let settled = false;
+    let terminationError: TripWatchError | undefined;
+    let closeObserved = false;
     const childEnv = { ...selectedEnv };
     delete childEnv.TELEGRAM_BOT_TOKEN;
     delete childEnv.TELEGRAM_CHAT_ID;
 
     const child = (options.spawnImplementation ?? spawn)(command, [...args], {
       cwd: options.cwd,
+      detached: process.platform !== "win32",
       env: childEnv,
       shell: false,
       windowsHide: true
     });
+    const ownsProcessGroup =
+      process.platform !== "win32" && options.spawnImplementation === undefined && typeof child.pid === "number" && child.pid > 0;
+    let processGroupGone = !ownsProcessGroup;
 
-    const timeout = setTimeout(() => {
-      if (settled) {
-        return;
+    let terminationGrace: NodeJS.Timeout | undefined;
+    let terminationDeadline: NodeJS.Timeout | undefined;
+    let terminationProbe: NodeJS.Timeout | undefined;
+
+    const clearTimers = () => {
+      if (timeout) clearTimeout(timeout);
+      if (terminationGrace) clearTimeout(terminationGrace);
+      if (terminationDeadline) clearTimeout(terminationDeadline);
+      if (terminationProbe) clearTimeout(terminationProbe);
+    };
+
+    const settle = (result: { value: HelperCommandResult<T> } | { error: TripWatchError }) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      if ("error" in result) reject(result.error);
+      else resolve(result.value);
+    };
+
+    const signalOwnedProcess = (signal: NodeJS.Signals): boolean => {
+      if (ownsProcessGroup) {
+        try {
+          process.kill(-child.pid!, signal);
+          return true;
+        } catch {
+          return false;
+        }
       }
 
-      settled = true;
-      child.kill("SIGTERM");
-      reject(new TripWatchError("HELPER_TIMEOUT", `helper가 ${options.timeoutMs}ms 안에 응답하지 않았습니다.`));
+      try {
+        return child.kill(signal);
+      } catch {
+        return false;
+      }
+    };
+
+    const completeTerminationIfProven = () => {
+      if (!terminationError || !closeObserved) return;
+      if (ownsProcessGroup) processGroupGone = isProcessGroupGone(child.pid!);
+      if (processGroupGone) settle({ error: terminationError });
+    };
+
+    const beginTermination = (error: TripWatchError) => {
+      if (terminationError || settled) return;
+      terminationError = error;
+      signalOwnedProcess("SIGTERM");
+
+      terminationGrace = setTimeout(() => {
+        if (!settled) {
+          signalOwnedProcess("SIGKILL");
+          completeTerminationIfProven();
+        }
+      }, TERMINATION_GRACE_MS);
+
+      terminationDeadline = setTimeout(() => {
+        settle({
+          error: new TripWatchError("HELPER_TERMINATION_FAILED", "helper 종료를 제한 시간 안에 확인하지 못했습니다.")
+        });
+      }, TERMINATION_FINAL_DEADLINE_MS);
+
+      if (ownsProcessGroup) {
+        const probeTermination = () => {
+          completeTerminationIfProven();
+          if (!settled) {
+            terminationProbe = setTimeout(probeTermination, TERMINATION_PROBE_MS);
+          }
+        };
+        terminationProbe = setTimeout(probeTermination, TERMINATION_PROBE_MS);
+      }
+    };
+
+    const timeout = setTimeout(() => {
+      beginTermination(new TripWatchError("HELPER_TIMEOUT", `helper가 ${options.timeoutMs}ms 안에 응답하지 않았습니다.`));
     }, options.timeoutMs);
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
 
     child.stdout.on("data", (chunk: string) => {
-      if (settled) {
-        return;
-      }
+      if (settled || terminationError) return;
 
       const appended = appendWithLimit(stdout, chunk, stdoutLimitBytes);
       stdout = appended.value;
-
       if (appended.exceeded) {
-        stdoutExceeded = true;
-        settled = true;
-        child.kill("SIGTERM");
-        clearTimeout(timeout);
-        reject(new TripWatchError("HELPER_FAILED", `helper stdout이 ${stdoutLimitBytes}바이트 제한을 초과했습니다.`));
+        beginTermination(new TripWatchError("HELPER_FAILED", `helper stdout이 ${stdoutLimitBytes}바이트 제한을 초과했습니다.`));
       }
     });
 
@@ -132,22 +209,18 @@ export async function runHelperCommand<T = unknown>(
     });
 
     child.on("error", (error) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      clearTimeout(timeout);
-      reject(new TripWatchError("HELPER_FAILED", "helper 실행을 시작하지 못했습니다.", { cause: error }));
+      if (settled || terminationError) return;
+      settle({ error: new TripWatchError("HELPER_FAILED", "helper 실행을 시작하지 못했습니다.", { cause: error }) });
     });
 
     child.on("close", (code) => {
-      if (settled) {
+      if (settled) return;
+
+      if (terminationError) {
+        closeObserved = true;
+        completeTerminationIfProven();
         return;
       }
-
-      settled = true;
-      clearTimeout(timeout);
 
       const maskedStderr = maskSecrets(stderr, { env: childEnv });
       const stderrTruncated = stderrExceeded || maskedStderr.length > 500;
@@ -155,34 +228,31 @@ export async function runHelperCommand<T = unknown>(
         ? `${maskedStderr.slice(0, 500)}${stderrTruncated ? "\n[stderr truncated]" : ""}`
         : undefined;
 
-      if (stdoutExceeded) {
-        reject(new TripWatchError("HELPER_FAILED", `helper stdout이 ${stdoutLimitBytes}바이트 제한을 초과했습니다.`));
-        return;
-      }
-
       if (code !== 0) {
-        reject(
-          new TripWatchError("HELPER_FAILED", `helper가 exit code ${code ?? "unknown"}로 종료되었습니다.`, {
+        settle({
+          error: new TripWatchError(`HELPER_FAILED`, `helper가 exit code ${code ?? "unknown"}로 종료되었습니다.`, {
             raw: stderrSummary
           })
-        );
+        });
         return;
       }
 
       try {
-        resolve({
-          data: JSON.parse(stdout) as T,
-          stdout,
-          stderrSummary,
-          exitCode: code ?? 0
+        settle({
+          value: {
+            data: JSON.parse(stdout) as T,
+            stdout,
+            stderrSummary,
+            exitCode: code ?? 0
+          }
         });
       } catch (error) {
-        reject(
-          new TripWatchError("PARSE_ERROR", "helper stdout을 JSON으로 파싱하지 못했습니다.", {
+        settle({
+          error: new TripWatchError("PARSE_ERROR", "helper stdout을 JSON으로 파싱하지 못했습니다.", {
             raw: stderrSummary,
             cause: error
           })
-        );
+        });
       }
     });
   }).catch((error: unknown) => {

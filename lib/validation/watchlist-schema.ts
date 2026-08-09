@@ -39,6 +39,7 @@ export const watchItemCreateSchema = baseWatchItemSchema
     params: z.unknown().optional(),
     paramsJson: z.string().optional()
   })
+  .strict()
   .transform((value, ctx) => {
     if (value.params === undefined && value.paramsJson === undefined) {
       ctx.addIssue({

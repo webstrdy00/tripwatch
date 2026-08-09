@@ -3,8 +3,10 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import type { TripWatchApiResponse, TripWatchStatus } from "@/lib/api-response";
-import { failedResponse } from "@/lib/api-response";
+import { parseJsonBodyWithSchema } from "@/lib/api-response";
+import { buildApiRouteError } from "@/lib/api-route-error";
 import { db } from "@/lib/db";
+import { assertLocalOperatorRequest } from "@/lib/security/local-operator";
 import { isFailedRerunCooldownActive, runWatchItem } from "@/lib/services/watchlist-run-service";
 import type { WatchItemType } from "@/lib/validation/common-schema";
 
@@ -66,7 +68,7 @@ const runBatchSchema = z.object({
   limit: z
     .preprocess(normalizeInteger, z.number().int().min(1).default(MAX_BATCH_LIMIT))
     .transform((value) => Math.min(value, MAX_BATCH_LIMIT))
-});
+}).strict();
 
 type RunBatchInput = z.infer<typeof runBatchSchema>;
 
@@ -87,26 +89,6 @@ const watchItemInclude = {
   }
 };
 
-async function parseRunBatchInput(request: Request): Promise<RunBatchInput> {
-  let body: unknown = {};
-  const text = await request.text();
-
-  if (text.trim()) {
-    try {
-      body = JSON.parse(text) as unknown;
-    } catch (error) {
-      throw new Error(error instanceof Error ? error.message : "Invalid JSON");
-    }
-  }
-
-  const parsed = runBatchSchema.safeParse(body);
-
-  if (!parsed.success) {
-    throw new Error(parsed.error.issues.map((issue) => issue.message).join("; "));
-  }
-
-  return parsed.data;
-}
 
 function targetTypes(input: RunBatchInput): string[] {
   if (input.type === "ticket" && !input.includeTickets) {
@@ -229,30 +211,11 @@ function batchResponse(data: WatchlistBatchRunData): TripWatchApiResponse<Watchl
   };
 }
 
-function validationErrorResponse(message: string): TripWatchApiResponse<never> {
-  return failedResponse({
-    source: SOURCE,
-    summary: "배치 다시 조회 요청 값이 올바르지 않습니다.",
-    error: {
-      code: "VALIDATION_ERROR",
-      message: "배치 다시 조회 요청 값이 올바르지 않습니다.",
-      raw: message
-    }
-  });
-}
 
 export async function POST(request: Request) {
-  let input: RunBatchInput;
-
   try {
-    input = await parseRunBatchInput(request);
-  } catch (error) {
-    return NextResponse.json(validationErrorResponse(error instanceof Error ? error.message : "요청 값을 확인하세요."), {
-      status: 400
-    });
-  }
-
-  try {
+    assertLocalOperatorRequest(request);
+    const input = await parseJsonBodyWithSchema(request, runBatchSchema);
     const types = targetTypes(input);
     const allCandidates =
       types.length === 0
@@ -299,19 +262,8 @@ export async function POST(request: Request) {
     };
 
     return NextResponse.json(batchResponse(data));
-  } catch {
-    return NextResponse.json(
-      failedResponse({
-        source: SOURCE,
-        summary: "배치 다시 조회를 완료하지 못했습니다.",
-        error: {
-          code: "UNKNOWN_ERROR",
-          message: "배치 다시 조회를 완료하지 못했습니다."
-        }
-      }),
-      {
-        status: 500
-      }
-    );
+  } catch (error) {
+    const routeError = buildApiRouteError(error, SOURCE);
+    return NextResponse.json(routeError.body, { status: routeError.status });
   }
 }

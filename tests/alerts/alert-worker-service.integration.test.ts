@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runAlertWorker } from "@/lib/services/alert-worker-service";
+import type { StoredWatchItemRunResult } from "@/lib/services/watchlist-run-service";
 
 type Row = Record<string, any>;
 
@@ -67,7 +68,7 @@ function fakeClient(rows: Row[], hooks: FakeHooks = {}) {
   return client;
 }
 
-function resultFor(index: number): Row {
+function resultFor(index: number): Row & StoredWatchItemRunResult {
   return {
     id: `result-${index}`, type: "flight", status: "success", source: "flight-ticket-search",
     checkedAt: fixedNow, createdAt: fixedNow, officialUrl: "https://www.google.com/travel/flights",
@@ -77,7 +78,7 @@ function resultFor(index: number): Row {
     })
   };
 }
-function newerResult(index: number, type = "flight"): Row {
+function newerResult(index: number, type = "flight"): Row & StoredWatchItemRunResult {
   return {
     ...resultFor(index),
     id: `newer-${index}-${type}`,
@@ -106,9 +107,10 @@ test("twelve-rule null-first fair rotation stops at five actual sequential dispa
       dispatched.push(watchItemId);
       const index = Number(watchItemId.slice("watch-".length));
       const row = rows[index];
-      row.watchItem.results = [resultFor(index)];
+      const stored = resultFor(index);
+      row.watchItem.results = [stored];
       active -= 1;
-      return { providerDispatched: true, alertMode: "flight_search", storedResult: row.watchItem.results[0], response: {} as never };
+      return { providerDispatched: true, alertMode: "flight_search", storedResult: stored, response: {} as never };
     },
     sendTelegram: async () => ({ outcome: "sent", code: "TELEGRAM_SENT" })
   });
@@ -117,6 +119,105 @@ test("twelve-rule null-first fair rotation stops at five actual sequential dispa
   assert.equal(maximum, 1);
   assert.deepEqual(dispatched, ["watch-0", "watch-1", "watch-2", "watch-3", "watch-4"]);
   assert.equal(rows.filter((row) => row.deliveryState === "sent").length, 5);
+});
+test("a provider cooldown skip leaves rule state untouched and an immediate second run has no external effect", async () => {
+  const rows = [makeRule(0)];
+  let providerCalls = 0;
+  let telegramCalls = 0;
+  const worker = () => runAlertWorker({
+    db: fakeClient(rows) as never,
+    credentials: { botToken: "test", chatId: "1" },
+    now: () => fixedNow,
+    runWatchItem: async () => {
+      providerCalls += 1;
+      const stored = resultFor(0);
+      rows[0].watchItem.results = [stored];
+      return { providerDispatched: true, alertMode: "flight_search", storedResult: stored, response: {} as never };
+    },
+    sendTelegram: async () => {
+      telegramCalls += 1;
+      return { outcome: "sent", code: "TELEGRAM_SENT" };
+    }
+  });
+  const first = await worker();
+  const baseline = structuredClone(rows[0]);
+  const second = await worker();
+
+  assert.equal(first.providerDispatches, 1);
+  assert.equal(second.providerDispatches, 0);
+  assert.equal(second.providerCooldownSkipped, 1);
+  assert.equal(providerCalls, 1);
+  assert.equal(telegramCalls, 1);
+  assert.deepEqual(rows[0], baseline);
+});
+
+test("same-type due rules dispatch sequentially up to the invocation cap", async () => {
+  const rows = [makeRule(0), makeRule(1)];
+  const dispatched: string[] = [];
+  const result = await runAlertWorker({
+    db: fakeClient(rows) as never,
+    limit: 2,
+    credentials: { botToken: "test", chatId: "1" },
+    now: () => fixedNow,
+    runWatchItem: async (watchItemId) => {
+      dispatched.push(watchItemId);
+      const index = Number(watchItemId.slice("watch-".length));
+      const stored = resultFor(index);
+      rows[index].watchItem.results = [stored];
+      return { providerDispatched: true, alertMode: "flight_search", storedResult: stored, response: {} as never };
+    },
+    sendTelegram: async () => ({ outcome: "sent", code: "TELEGRAM_SENT" })
+  });
+
+  assert.equal(result.providerDispatches, 2);
+  assert.deepEqual(dispatched, ["watch-0", "watch-1"]);
+});
+
+test("a concurrent same-rule runner loses without a second provider or Telegram effect", async () => {
+  const rows = [makeRule(0)];
+  const client = fakeClient(rows);
+  let releaseFirst: (() => void) | undefined;
+  const firstClaimed = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  let providerCalls = 0;
+  let telegramCalls = 0;
+  const first = runAlertWorker({
+    db: client as never,
+    credentials: { botToken: "test", chatId: "1" },
+    now: () => fixedNow,
+    runWatchItem: async () => {
+      providerCalls += 1;
+      releaseFirst?.();
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      const stored = resultFor(0);
+      rows[0].watchItem.results = [stored];
+      return { providerDispatched: true, alertMode: "flight_search", storedResult: stored, response: {} as never };
+    },
+    sendTelegram: async () => {
+      telegramCalls += 1;
+      return { outcome: "sent", code: "TELEGRAM_SENT" };
+    }
+  });
+  await firstClaimed;
+  const second = await runAlertWorker({
+    db: client as never,
+    credentials: { botToken: "test", chatId: "1" },
+    now: () => fixedNow,
+    runWatchItem: async () => {
+      providerCalls += 1;
+      throw new Error("second provider call");
+    },
+    sendTelegram: async () => {
+      telegramCalls += 1;
+      throw new Error("second telegram call");
+    }
+  });
+  releaseFirst?.();
+  const firstResult = await first;
+
+  assert.equal(firstResult.providerDispatches, 1);
+  assert.equal(second.providerDispatches, 0);
+  assert.equal(providerCalls, 1);
+  assert.equal(telegramCalls, 1);
 });
 
 test("startup recovery cancels reserved attempts, marks sending ambiguous, and performs no dispatch", async () => {
@@ -178,6 +279,55 @@ test("a pre-provider skip restores its claimed cursor and does not consume the d
   assert.equal(result.providerDispatches, 0);
   assert.equal(result.skipped, 1);
   assert.equal(rows[0].lastProviderRunAt?.getTime(), prior?.getTime());
+});
+test("a pre-provider exception restores its claimed cursor without consuming dispatch capacity", async () => {
+  const rows = [makeRule(7)];
+  const prior = rows[0].lastProviderRunAt;
+  let calls = 0;
+  const result = await runAlertWorker({
+    db: fakeClient(rows) as never,
+    credentials: { botToken: "test", chatId: "1" },
+    now: () => fixedNow,
+    runWatchItem: async () => {
+      calls += 1;
+      throw new Error("pre-provider failure");
+    },
+    sendTelegram: async () => {
+      throw new Error("must not send");
+    }
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.exitCode, 4);
+  assert.equal(result.providerDispatches, 0);
+  assert.equal(result.skipped, 1);
+  assert.equal(rows[0].lastProviderRunAt?.getTime(), prior?.getTime());
+  assert.equal(rows[0].latestOutcomeCode, "PROVIDER_DISPATCH_FAILED");
+});
+
+test("a signalled post-provider exception retains cadence and consumes one dispatch without retry", async () => {
+  const rows = [makeRule(7)];
+  let calls = 0;
+  const result = await runAlertWorker({
+    db: fakeClient(rows) as never,
+    credentials: { botToken: "test", chatId: "1" },
+    now: () => fixedNow,
+    runWatchItem: async (_watchItemId, signal) => {
+      calls += 1;
+      signal.providerDispatchStarted();
+      throw new Error("post-provider failure");
+    },
+    sendTelegram: async () => {
+      throw new Error("must not send");
+    }
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.exitCode, 4);
+  assert.equal(result.providerDispatches, 1);
+  assert.equal(result.skipped, 0);
+  assert.equal(rows[0].lastProviderRunAt?.getTime(), fixedNow.getTime());
+  assert.equal(rows[0].latestOutcomeCode, "PROVIDER_DISPATCH_FAILED");
 });
 
 test("scan-to-claim latest-result races block provider work without advancing the cursor", async () => {
@@ -434,10 +584,9 @@ test("rejected and ambiguous sends are single-attempt fail-fast terminal outcome
       },
       sendTelegram: async () => {
         telegramCalls += 1;
-        return {
-          outcome,
-          code: outcome === "rejected" ? "TELEGRAM_4XX" : "TELEGRAM_AMBIGUOUS"
-        };
+        return outcome === "rejected"
+          ? { outcome: "rejected", code: "TELEGRAM_4XX" }
+          : { outcome: "ambiguous", code: "TELEGRAM_AMBIGUOUS" };
       }
     });
 

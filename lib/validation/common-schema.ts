@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TripWatchError } from "@/lib/errors";
 
 export const tripWatchStatusSchema = z.enum(["success", "partial", "failed"]);
 export const iataCodeSchema = z.string().regex(/^[A-Z]{3}$/, "IATA 코드는 대문자 3자리여야 합니다.");
@@ -7,6 +8,15 @@ export const busTimeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "시�
 export const seatSchema = z.enum(["economy", "premium-economy", "business", "first"]);
 export const ticketPlatformSchema = z.enum(["interpark", "yes24"]);
 export const watchItemTypeSchema = z.enum(["flight", "express_bus", "intercity_bus", "ticket", "foresttrip"]);
+export const databaseIdSchema = z.string().trim().min(1).max(128);
+export function parseDatabaseId(value: unknown): string {
+  const parsed = databaseIdSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new TripWatchError("VALIDATION_ERROR", "식별자가 올바르지 않습니다.");
+  }
+
+  return parsed.data;
+}
 
 export type TripWatchStatus = z.infer<typeof tripWatchStatusSchema>;
 export type Seat = z.infer<typeof seatSchema>;

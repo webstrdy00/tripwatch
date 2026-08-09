@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { seatSchema } from "@/lib/validation/common-schema";
+import { databaseIdSchema, seatSchema } from "@/lib/validation/common-schema";
 
 const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/;
 const yearMonthPattern = /^\d{4}-\d{2}$/;
@@ -93,8 +93,8 @@ function withFlightSearchRules<T extends z.ZodTypeAny>(schema: T) {
 export const flightSearchSchema = withFlightSearchRules(flightSearchObjectSchema);
 
 export const flightSearchRequestSchema = withFlightSearchRules(flightSearchObjectSchema.extend({
-  watchItemId: z.preprocess(normalizeOptionalString, z.string().min(1).optional())
-}));
+  watchItemId: z.preprocess(normalizeOptionalString, databaseIdSchema.optional())
+}).strict());
 
 const flightCompareMonthObjectSchema = flightSearchObjectSchema.extend({
   yearMonth: z.preprocess(normalizeOptionalString, flightYearMonthSchema.optional()),
@@ -103,9 +103,10 @@ const flightCompareMonthObjectSchema = flightSearchObjectSchema.extend({
   watchItemId: z.preprocess(normalizeOptionalString, z.string().min(1).optional())
 });
 
-export const flightCompareMonthSchema = withFlightSearchRules(flightCompareMonthObjectSchema)
-  .transform((value, ctx) => {
-    const yearMonth = value.yearMonth ?? value.month ?? value.date.slice(0, 7);
+function withFlightCompareMonthDefaults<T extends z.ZodTypeAny>(schema: T) {
+  return schema.transform((value, ctx) => {
+    const params = value as z.output<typeof flightCompareMonthObjectSchema>;
+    const yearMonth = params.yearMonth ?? params.month ?? params.date.slice(0, 7);
 
     if (!yearMonthPattern.test(yearMonth)) {
       ctx.addIssue({
@@ -117,10 +118,21 @@ export const flightCompareMonthSchema = withFlightSearchRules(flightCompareMonth
     }
 
     return {
-      ...value,
+      ...params,
       yearMonth
     };
   });
+}
+
+export const flightCompareMonthSchema = withFlightCompareMonthDefaults(
+  withFlightSearchRules(flightCompareMonthObjectSchema)
+);
+
+export const flightCompareMonthRequestSchema = withFlightCompareMonthDefaults(
+  withFlightSearchRules(flightCompareMonthObjectSchema.omit({ watchItemId: true }).extend({
+    watchItemId: z.preprocess(normalizeOptionalString, databaseIdSchema.optional())
+  }).strict())
+);
 
 function isCompareMonthParams(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) {

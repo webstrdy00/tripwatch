@@ -7,6 +7,7 @@ import { TripWatchError } from "@/lib/errors";
 import { assertLocalOperatorRequest } from "@/lib/security/local-operator";
 import { createAlertRule, listAlertRules, reloadWatchItem } from "@/lib/services/alert-rule-service";
 import { serializeWatchItem } from "@/lib/watchlist";
+import { databaseIdSchema } from "@/lib/validation/common-schema";
 
 const SOURCE = "tripwatch:alert-rules";
 const DEFAULT_LIST_PAGE_SIZE = 100;
@@ -15,7 +16,7 @@ const MAX_LIST_PAGE_SIZE = 100;
 export const dynamic = "force-dynamic";
 
 const alertRuleCreateSchema = z.object({
-  watchItemId: z.string().trim().min(1),
+  watchItemId: databaseIdSchema,
   condition: z.unknown()
 }).strict();
 
